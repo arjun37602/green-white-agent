@@ -1,0 +1,8 @@
+terminal-bench>=1.0.0
+pydantic>=2.0.0
+typing-extensions>=4.0.0
+datasets>=2.0.0
+numpy>=1.24.0
+pandas>=2.0.0
+pytest>=7.0.0
+pytest-cov>=4.0.0
