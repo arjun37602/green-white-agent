@@ -6,7 +6,7 @@ setup(
     description="Green agent for Terminal-Bench integration",
     packages=find_packages(),
     install_requires=[
-        "terminal-bench>=1.0.0",
+        "terminal-bench>=0.2.13",
         "pydantic>=2.0.0",
         "typing-extensions>=4.0.0",
         "datasets>=2.0.0",

@@ -1,8 +1,12 @@
-terminal-bench>=1.0.0
 pydantic>=2.0.0
 typing-extensions>=4.0.0
-datasets>=2.0.0
 numpy>=1.24.0
 pandas>=2.0.0
 pytest>=7.0.0
 pytest-cov>=4.0.0
+openai>=1.0.0
+python-dotenv>=1.0.0
+requests>=2.25.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+universal-a2a-agent>=0.1.0
