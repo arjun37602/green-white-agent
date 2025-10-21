@@ -7,6 +7,7 @@ following the official specification at https://google.github.io/a2a-protocol-sp
 import os
 import logging
 import json
+import subprocess
 from typing import Dict, Any, List, Optional
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -15,7 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 
 # Import A2A protocol models
-from a2a_protocol import (
+from .a2a_protocol import (
     AgentCard, AgentSkill, AgentCapabilities, AgentProvider, TransportProtocol,
     Message, Task, TaskStatus, Artifact,
     TextPart, Part,
@@ -51,6 +52,69 @@ class TerminalBenchAgent:
         # Store for active tasks and contexts
         self.tasks: Dict[str, Task] = {}
         self.contexts: Dict[str, List[Message]] = {}
+        
+        # Define tool functions for terminal operations
+        self.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_bash_command",
+                    "description": "Execute a bash command in the terminal and return the output",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The bash command to execute"
+                            },
+                            "working_directory": {
+                                "type": "string",
+                                "description": "The working directory to execute the command in (optional)"
+                            }
+                        },
+                        "required": ["command"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read the contents of a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the file to read"
+                            }
+                        },
+                        "required": ["file_path"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "description": "Write content to a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "Path to the file to write"
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Content to write to the file"
+                            }
+                        },
+                        "required": ["file_path", "content"]
+                    }
+                }
+            }
+        ]
         
         # Define agent skills following A2A spec
         self.skills = [
@@ -115,30 +179,127 @@ class TerminalBenchAgent:
             }
         )
     
+    def execute_bash_command(self, command: str, working_directory: str = None) -> Dict[str, Any]:
+        """Execute a bash command and return the result."""
+        try:
+            self.logger.info(f"🔧 Executing command: {command}")
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=working_directory,
+                timeout=30
+            )
+            
+            output = {
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+                "success": result.returncode == 0
+            }
+            
+            self.logger.info(f"✅ Command output: {output['stdout'][:200]}")
+            return output
+        except subprocess.TimeoutExpired:
+            return {"error": "Command timeout", "success": False}
+        except Exception as e:
+            self.logger.error(f"Error executing command: {e}")
+            return {"error": str(e), "success": False}
+    
+    def read_file(self, file_path: str) -> Dict[str, Any]:
+        """Read a file and return its contents."""
+        try:
+            self.logger.info(f"📖 Reading file: {file_path}")
+            with open(file_path, 'r') as f:
+                content = f.read()
+            return {"content": content, "success": True}
+        except Exception as e:
+            self.logger.error(f"Error reading file: {e}")
+            return {"error": str(e), "success": False}
+    
+    def write_file(self, file_path: str, content: str) -> Dict[str, Any]:
+        """Write content to a file."""
+        try:
+            self.logger.info(f"✍️ Writing to file: {file_path}")
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, 'w') as f:
+                f.write(content)
+            return {"success": True}
+        except Exception as e:
+            self.logger.error(f"Error writing file: {e}")
+            return {"error": str(e), "success": False}
+    
     def solve_problem(self, problem_description: str) -> str:
-        """Solve a terminal bench problem using OpenAI."""
-        system_prompt = """You are an expert in terminal operations, system administration, and programming. 
-        Solve the given problem step by step, providing clear instructions and explanations.
+        """Solve a terminal bench problem using OpenAI with tool calling."""
+        system_prompt = """You are an expert in terminal operations, system administration, and programming.
+        You have access to tools to execute bash commands, read files, and write files.
+        Use these tools to solve terminal bench problems step by step.
         
-        For terminal problems, provide:
-        1. The exact commands to run
-        2. Explanation of what each command does
-        3. Expected output
-        4. Troubleshooting tips if applicable
-        
+        Always verify your work by checking the results of commands before proceeding.
         Be precise and practical in your solutions."""
         
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": problem_description}
+        ]
+        
+        tool_call_log = []
+        max_iterations = 10
+        
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": problem_description}
-                ],
-                max_tokens=1500,
-                temperature=0.3
-            )
-            return response.choices[0].message.content
+            for iteration in range(max_iterations):
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=self.tools,
+                    tool_choice="auto",
+                    max_tokens=2000,
+                    temperature=0.3
+                )
+                
+                assistant_message = response.choices[0].message
+                messages.append(assistant_message)
+                
+                # Check if the model wants to call a function
+                if assistant_message.tool_calls:
+                    for tool_call in assistant_message.tool_calls:
+                        function_name = tool_call.function.name
+                        function_args = json.loads(tool_call.function.arguments)
+                        
+                        self.logger.info(f"🔧 Tool call: {function_name}({function_args})")
+                        tool_call_log.append(f"Tool: {function_name} | Args: {function_args}")
+                        
+                        # Execute the function
+                        if function_name == "execute_bash_command":
+                            function_response = self.execute_bash_command(**function_args)
+                        elif function_name == "read_file":
+                            function_response = self.read_file(**function_args)
+                        elif function_name == "write_file":
+                            function_response = self.write_file(**function_args)
+                        else:
+                            function_response = {"error": f"Unknown function: {function_name}"}
+                        
+                        # Add function response to messages
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": function_name,
+                            "content": json.dumps(function_response)
+                        })
+                else:
+                    # No more tool calls, return the final response
+                    final_response = assistant_message.content or "Task completed"
+                    
+                    # Add tool call log
+                    if tool_call_log:
+                        final_response += "\n\n=== Tool Execution Log ===\n"
+                        final_response += "\n".join(tool_call_log)
+                    
+                    return final_response
+            
+            return "Maximum iterations reached. Task may not be complete."
+            
         except Exception as e:
             self.logger.error(f"Error solving problem: {e}")
             return f"Error: {str(e)}"

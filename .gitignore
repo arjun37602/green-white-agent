@@ -1,0 +1,26 @@
+# Environment variables
+.env
+.env.local
+
+# Virtual environments  
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Build artifacts
+*.egg-info/
+green_white_agent.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+white_agent/__pycache__/
+white_agent/__pycache__/agent.cpython-313.pyc
