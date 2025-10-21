@@ -44,7 +44,7 @@ def test_message_send():
     rpc_request = {
         "jsonrpc": "2.0",
         "id": "test-001",
-        "method": "message.send",
+        "method": "message/send",
         "params": {
             "message": {
                 "role": "user",
@@ -147,7 +147,7 @@ def test_context_continuation(context_id, task_id):
     rpc_request = {
         "jsonrpc": "2.0",
         "id": "test-003",
-        "method": "message.send",
+        "method": "message/send",
         "params": {
             "message": {
                 "role": "user",
