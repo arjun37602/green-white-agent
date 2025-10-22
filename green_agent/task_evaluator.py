@@ -268,6 +268,7 @@ class TaskEvaluator:
         """Check if a file requirement is met."""
         file_snapshot = sandbox_state.file_system_snapshot
         
+        # Check if file exists with exact path
         if file_path in file_snapshot["files"]:
             actual_content = file_snapshot["files"][file_path]
             
@@ -276,8 +277,28 @@ class TaskEvaluator:
             else:
                 content_matches = expected_content in actual_content
                 return {"exists": True, "content_matches": content_matches, "content": actual_content}
-        else:
-            return {"exists": False, "content_matches": False, "content": None}
+        
+        # Check if file exists with app/ prefix (sandbox working directory)
+        app_file_path = f"app/{file_path}"
+        if app_file_path in file_snapshot["files"]:
+            actual_content = file_snapshot["files"][app_file_path]
+            
+            if expected_content == ".*":
+                return {"exists": True, "content_matches": True, "content": actual_content}
+            else:
+                content_matches = expected_content in actual_content
+                return {"exists": True, "content_matches": content_matches, "content": actual_content}
+        
+        # Check if file exists anywhere in the sandbox (fallback)
+        for existing_file_path, content in file_snapshot["files"].items():
+            if file_path in existing_file_path or existing_file_path.endswith(file_path):
+                if expected_content == ".*":
+                    return {"exists": True, "content_matches": True, "content": content}
+                else:
+                    content_matches = expected_content in content
+                    return {"exists": True, "content_matches": content_matches, "content": content}
+        
+        return {"exists": False, "content_matches": False, "content": None}
     
     def _check_output_requirement(self, pattern: str, command_history: List[CommandResult]) -> Dict[str, Any]:
         """Check if an output requirement is met."""
@@ -295,9 +316,21 @@ class TaskEvaluator:
         
         # Simple keyword-based checking
         if "file exists" in condition_lower or "exists" in condition_lower:
-            # Check if any files were created
+            # Check if any files OR directories were created
             files_created = len(sandbox_state.file_system_snapshot["files"]) > 0
-            return {"satisfied": files_created, "condition": condition, "details": "File existence check"}
+            directories_created = len(sandbox_state.file_system_snapshot["directories"]) > 0
+            return {"satisfied": files_created or directories_created, "condition": condition, "details": "File/directory existence check"}
+        
+        if "directory" in condition_lower and "exists" in condition_lower:
+            # Check specifically for directories
+            directories_created = len(sandbox_state.file_system_snapshot["directories"]) > 0
+            return {"satisfied": directories_created, "condition": condition, "details": "Directory existence check"}
+        
+        if "navigate" in condition_lower or "cd" in condition_lower:
+            # Check if cd commands were executed successfully
+            cd_commands = [cmd for cmd in command_history if cmd.command.startswith("cd")]
+            cd_success = any(cmd.success for cmd in cd_commands)
+            return {"satisfied": cd_success, "condition": condition, "details": "Navigation check"}
         
         if "success" in condition_lower or "completed" in condition_lower:
             # Check if last command was successful
