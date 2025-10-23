@@ -127,7 +127,7 @@ class SimpleWhiteAgent:
     
     def solve_task(self, task_description: str) -> List[str]:
         """
-        Solve a task using template-based approach.
+        Solve a task using instruction parsing with template fallback.
         
         Args:
             task_description: Description of the task to solve
@@ -137,7 +137,13 @@ class SimpleWhiteAgent:
         """
         self.logger.info(f"Solving task: {task_description[:100]}...")
         
-        # Try to match task description to templates
+        # First try to parse the actual instruction
+        commands = self._parse_instruction(task_description)
+        if commands:
+            self.logger.info(f"Generated commands from instruction parsing: {commands}")
+            return commands
+        
+        # Fallback to template matching
         task_description_lower = task_description.lower()
         
         for pattern, template_name in self.task_patterns.items():
@@ -154,6 +160,99 @@ class SimpleWhiteAgent:
             "echo 'Default solution' > solution.txt",
             "cat solution.txt"
         ]
+    
+    def _parse_instruction(self, instruction: str) -> List[str]:
+        """
+        Parse Terminal-Bench instruction to generate appropriate commands.
+        
+        Args:
+            instruction: The task instruction
+            
+        Returns:
+            List of commands or empty list if parsing failed
+        """
+        instruction_lower = instruction.lower()
+        
+        # Parse "Create a file called X. Write Y to it." pattern
+        file_create_match = re.search(r"create a file called (.*?)\. write ['\"](.*?)['\"] to it", instruction_lower)
+        if file_create_match:
+            filename = file_create_match.group(1).strip()
+            content = file_create_match.group(2).strip()
+            
+            # Handle /app/ prefix - use relative path instead
+            if filename.startswith('/app/'):
+                filename = filename[5:]  # Remove /app/ prefix
+            elif not filename.startswith('app/'):
+                filename = f"app/{filename}"
+            
+            commands = [
+                f'mkdir -p $(dirname {filename})',
+                f'echo "{content}" > {filename}',
+                f'cat {filename}'
+            ]
+            self.logger.info(f"Parsed file creation: {filename} with content '{content}'")
+            return commands
+        
+        # Parse "Write Y to file X" pattern
+        write_match = re.search(r"write ['\"]([^'\"]*)['\"] to (?:file )?([^\s,.]*)", instruction_lower)
+        if write_match:
+            content = write_match.group(1).strip()
+            filename = write_match.group(2).strip()
+            
+            # Handle /app/ prefix - use relative path instead
+            if filename.startswith('/app/'):
+                filename = filename[5:]  # Remove /app/ prefix
+            elif not filename.startswith('app/'):
+                filename = f"app/{filename}"
+            
+            commands = [
+                f'mkdir -p $(dirname {filename})',
+                f'echo "{content}" > {filename}',
+                f'cat {filename}'
+            ]
+            self.logger.info(f"Parsed write operation: {filename} with content '{content}'")
+            return commands
+        
+        # Parse directory creation patterns
+        dir_match = re.search(r"create (?:a )?directory called (?:/app/)?([^\s,.]*)", instruction_lower)
+        if dir_match:
+            dirname = dir_match.group(1).strip()
+            if dirname.startswith('/app/'):
+                dirname = dirname[5:]  # Remove /app/ prefix
+            elif not dirname.startswith('app/'):
+                dirname = f"app/{dirname}"
+            
+            commands = [
+                f'mkdir -p {dirname}',
+                f'cd {dirname}',
+                'pwd'
+            ]
+            self.logger.info(f"Parsed directory creation: {dirname}")
+            return commands
+        
+        # Parse SSL certificate patterns
+        if "ssl" in instruction_lower or "certificate" in instruction_lower:
+            commands = [
+                'mkdir -p ssl',
+                'openssl req -x509 -newkey rsa:4096 -keyout ssl/server.key -out ssl/server.crt -days 365 -nodes -subj "/C=US/ST=CA/L=SF/O=Test/CN=localhost"',
+                'ls -la ssl/'
+            ]
+            self.logger.info("Parsed SSL certificate creation")
+            return commands
+        
+        # Parse archive patterns
+        if "archive" in instruction_lower or "tar" in instruction_lower:
+            commands = [
+                'echo "content" > file.txt',
+                'tar -czf archive.tar.gz file.txt',
+                'ls -la archive.tar.gz'
+            ]
+            self.logger.info("Parsed archive creation")
+            return commands
+        
+        # If no specific pattern matched, return empty list to fall back to templates
+        self.logger.info("No specific instruction pattern matched, falling back to templates")
+        return []
     
     def handle_message(self, message: Message) -> Task:
         """

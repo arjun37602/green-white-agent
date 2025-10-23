@@ -18,6 +18,7 @@ from datetime import datetime
 
 from .sandbox_manager import SandboxManager, CommandResult, SandboxState
 from .task_evaluator import TaskEvaluator, EvaluationResult
+from .dataset_loaders.terminal_bench_loader import TerminalBenchTaskLoader, TerminalBenchTask
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,7 +40,9 @@ class TaskExecutionResult:
 class GreenAgentTerminalBench:
     """Green agent for running Terminal Bench tasks against the white agent."""
     
-    def __init__(self, white_agent_url: str = "http://localhost:8002", sandbox_base_path: Optional[str] = None):
+    def __init__(self, white_agent_url: str = "http://localhost:8002", 
+                 sandbox_base_path: Optional[str] = None,
+                 terminal_bench_dataset_path: Optional[str] = None):
         self.white_agent_url = white_agent_url
         self.logger = logging.getLogger(__name__)
         
@@ -47,13 +50,23 @@ class GreenAgentTerminalBench:
         self.sandbox_manager = SandboxManager(base_path=sandbox_base_path)
         self.task_evaluator = TaskEvaluator()
         
+        # Initialize Terminal-Bench loader if dataset path provided
+        self.tb_loader = None
+        if terminal_bench_dataset_path:
+            try:
+                self.tb_loader = TerminalBenchTaskLoader(terminal_bench_dataset_path)
+                self.logger.info(f"Terminal-Bench dataset loaded from: {terminal_bench_dataset_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to load Terminal-Bench dataset: {e}")
+                self.tb_loader = None
+        
         # Task execution tracking
         self.active_tasks: Dict[str, Dict[str, Any]] = {}
         self.execution_history: List[TaskExecutionResult] = []
     
     def load_terminal_bench_tasks(self, task_ids: List[str] = None, limit: int = None) -> List[Dict[str, Any]]:
         """
-        Load Terminal Bench tasks using the terminal-bench CLI.
+        Load Terminal Bench tasks from Terminal-Bench dataset or fallback to demo tasks.
         
         Args:
             task_ids: Specific task IDs to load (None = load all)
@@ -63,48 +76,65 @@ class GreenAgentTerminalBench:
             List of task dictionaries
         """
         try:
-            # For now, we'll create a simple test task since terminal-bench doesn't have a direct list command
-            # In a real implementation, you would use the terminal-bench run command with specific task IDs
-            
-            if task_ids:
-                # Create mock tasks for the specified IDs
+            if self.tb_loader:
+                # Load from Terminal-Bench dataset
+                self.logger.info("Loading tasks from Terminal-Bench dataset")
+                tb_tasks = self.tb_loader.load_tasks_from_dataset(task_ids, limit)
+                
+                # Convert to internal format
                 tasks = []
-                for task_id in task_ids:
-                    task = {
-                        "id": task_id,
-                        "description": f"Terminal Bench task: {task_id}",
-                        "instruction": f"Complete the task: {task_id}",
-                        "environment": {"working_directory": "/app"},
-                        "test": f"Test for {task_id}"
-                    }
-                    tasks.append(task)
+                for tb_task in tb_tasks:
+                    task_dict = self.tb_loader.convert_to_internal_format(tb_task)
+                    tasks.append(task_dict)
+                
+                self.logger.info(f"Loaded {len(tasks)} tasks from Terminal-Bench dataset")
                 return tasks
             else:
-                # Return some example tasks for testing
-                example_tasks = [
-                    {
-                        "id": "crack-7z-hash",
-                        "description": "Crack a 7z archive password",
-                        "instruction": "You need to create a file called 'solution.txt' with the word found in the 'secrets.7z' archive. The final 'solution.txt' should be located at '/app/solution.txt'.",
-                        "environment": {"working_directory": "/app"},
-                        "test": "Check if solution.txt exists and contains the correct password"
-                    },
-                    {
-                        "id": "openssl-selfsigned-cert",
-                        "description": "Create a self-signed TLS certificate",
-                        "instruction": "Your company needs a self-signed TLS certificate for an internal development server. Create a self-signed certificate using OpenSSL with the specified requirements.",
-                        "environment": {"working_directory": "/app"},
-                        "test": "Verify certificate files exist and are properly formatted"
-                    }
-                ]
-                
-                if limit:
-                    return example_tasks[:limit]
-                return example_tasks
+                # Fall back to demo tasks
+                self.logger.info("Terminal-Bench dataset not available, using demo tasks")
+                return self._load_demo_tasks(task_ids, limit)
                     
         except Exception as e:
             self.logger.error(f"Error loading Terminal Bench tasks: {e}")
-            return []
+            return self._load_demo_tasks(task_ids, limit)
+    
+    def _load_demo_tasks(self, task_ids: List[str] = None, limit: int = None) -> List[Dict[str, Any]]:
+        """Load demo tasks for testing when Terminal-Bench dataset is not available."""
+        if task_ids:
+            # Create mock tasks for the specified IDs
+            tasks = []
+            for task_id in task_ids:
+                task = {
+                    "id": task_id,
+                    "description": f"Terminal Bench task: {task_id}",
+                    "instruction": f"Complete the task: {task_id}",
+                    "environment": {"working_directory": "/app"},
+                    "test": f"Test for {task_id}"
+                }
+                tasks.append(task)
+            return tasks
+        else:
+            # Return some example tasks for testing
+            example_tasks = [
+                {
+                    "id": "crack-7z-hash",
+                    "description": "Crack a 7z archive password",
+                    "instruction": "You need to create a file called 'solution.txt' with the word found in the 'secrets.7z' archive. The final 'solution.txt' should be located at '/app/solution.txt'.",
+                    "environment": {"working_directory": "/app"},
+                    "test": "Check if solution.txt exists and contains the correct password"
+                },
+                {
+                    "id": "openssl-selfsigned-cert",
+                    "description": "Create a self-signed TLS certificate",
+                    "instruction": "Your company needs a self-signed TLS certificate for an internal development server. Create a self-signed certificate using OpenSSL with the specified requirements.",
+                    "environment": {"working_directory": "/app"},
+                    "test": "Verify certificate files exist and are properly formatted"
+                }
+            ]
+            
+            if limit:
+                return example_tasks[:limit]
+            return example_tasks
     
     def execute_task_with_sandbox(self, task: Dict[str, Any]) -> TaskExecutionResult:
         """
@@ -137,7 +167,8 @@ class GreenAgentTerminalBench:
             
             # Step 5: Evaluate task completion
             evaluation_result = self.task_evaluator.evaluate(
-                task_id, task, command_history, final_sandbox_state
+                task_id, task, command_history, final_sandbox_state, 
+                self.sandbox_manager, sandbox_id
             )
             
             # Step 6: Clean up sandbox
@@ -522,12 +553,13 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=5, help="Maximum number of tasks")
     parser.add_argument("--no-sandbox", action="store_true", help="Disable sandbox isolation")
     parser.add_argument("--sandbox-path", help="Custom sandbox base path")
+    parser.add_argument("--dataset-path", help="Path to Terminal-Bench dataset directory")
     parser.add_argument("--cleanup", action="store_true", help="Clean up sandbox resources and exit")
     
     args = parser.parse_args()
     
     try:
-        green_agent = GreenAgentTerminalBench(args.agent_url, args.sandbox_path)
+        green_agent = GreenAgentTerminalBench(args.agent_url, args.sandbox_path, args.dataset_path)
         
         if args.cleanup:
             green_agent.cleanup_resources()

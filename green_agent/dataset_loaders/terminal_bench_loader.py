@@ -1,270 +1,262 @@
+#!/usr/bin/env python3
 """
-Terminal-Bench Dataset Loader
+Terminal-Bench Task Loader
 
-This module provides functionality to load and process Terminal-Bench datasets,
-handling various formats and converting them for use with the green agent.
+This module loads and parses Terminal-Bench tasks from the official dataset format.
 """
 
-import json
+import os
+import yaml
 import logging
-from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
-import pandas as pd
-import numpy as np
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
 
-try:
-    import datasets
-    DATASETS_AVAILABLE = True
-except ImportError:
-    DATASETS_AVAILABLE = False
+logger = logging.getLogger(__name__)
 
 
-class TerminalBenchLoader:
-    """
-    Dataset loader for Terminal-Bench datasets.
+@dataclass
+class TerminalBenchTask:
+    """Represents a Terminal-Bench task with all its components."""
+    task_id: str
+    task_path: str
+    instruction: str
+    author_name: str
+    author_email: str
+    difficulty: str
+    category: str
+    tags: List[str]
+    parser_name: str
+    max_agent_timeout_sec: float
+    max_test_timeout_sec: float
+    run_tests_in_same_shell: bool
+    expert_time_estimate_min: Optional[float]
+    junior_time_estimate_min: Optional[float]
+    solution_commands: List[str]
+    test_file_path: str
+    run_tests_script_path: str
+    dockerfile_path: str
+    docker_compose_path: str
+    task_deps_dir: Optional[str]
+
+
+class TerminalBenchTaskLoader:
+    """Loads Terminal-Bench tasks from dataset directories."""
     
-    This class handles loading various Terminal-Bench dataset formats,
-    including JSON, CSV, and HuggingFace datasets, and provides
-    a unified interface for accessing the data.
-    """
-    
-    def __init__(self):
-        """Initialize the Terminal-Bench dataset loader."""
+    def __init__(self, dataset_path: str):
+        """
+        Initialize the loader with a Terminal-Bench dataset path.
+        
+        Args:
+            dataset_path: Path to the Terminal-Bench dataset directory
+        """
+        self.dataset_path = Path(dataset_path)
         self.logger = logging.getLogger(__name__)
-        self.supported_formats = {'.json', '.jsonl', '.csv', '.tsv', '.txt'}
-        self.logger.info("TerminalBenchLoader initialized")
+        
+        if not self.dataset_path.exists():
+            raise ValueError(f"Dataset path does not exist: {dataset_path}")
+        
+        self.logger.info(f"TerminalBenchTaskLoader initialized with dataset path: {self.dataset_path}")
     
-    def load_dataset(self, dataset_path: Union[str, Path]) -> Dict[str, Any]:
+    def load_task(self, task_id: str) -> TerminalBenchTask:
         """
-        Load a dataset from the specified path.
+        Load a single Terminal-Bench task by ID.
         
         Args:
-            dataset_path: Path to the dataset file or directory
+            task_id: The task ID (directory name)
             
         Returns:
-            Dictionary containing the loaded dataset and metadata
+            TerminalBenchTask object
         """
-        dataset_path = Path(dataset_path)
-        self.logger.info(f"Loading dataset from: {dataset_path}")
+        task_path = self.dataset_path / task_id
         
-        if not dataset_path.exists():
-            raise FileNotFoundError(f"Dataset path does not exist: {dataset_path}")
+        if not task_path.exists():
+            raise ValueError(f"Task not found: {task_id}")
         
-        if dataset_path.is_file():
-            return self._load_file(dataset_path)
-        elif dataset_path.is_dir():
-            return self._load_directory(dataset_path)
+        self.logger.info(f"Loading Terminal-Bench task: {task_id}")
+        
+        # Parse task.yaml
+        task_yaml_path = task_path / "task.yaml"
+        if not task_yaml_path.exists():
+            raise ValueError(f"task.yaml not found for task: {task_id}")
+        
+        with open(task_yaml_path, 'r') as f:
+            task_data = yaml.safe_load(f)
+        
+        # Load solution commands
+        solution_commands = self._load_solution_commands(task_path)
+        
+        # Get test file path
+        test_file_path = task_path / "tests" / "test_outputs.py"
+        if not test_file_path.exists():
+            raise ValueError(f"test_outputs.py not found for task: {task_id}")
+        
+        # Get run-tests.sh path
+        run_tests_script_path = task_path / "run-tests.sh"
+        if not run_tests_script_path.exists():
+            raise ValueError(f"run-tests.sh not found for task: {task_id}")
+        
+        # Get Dockerfile path
+        dockerfile_path = task_path / "Dockerfile"
+        if not dockerfile_path.exists():
+            raise ValueError(f"Dockerfile not found for task: {task_id}")
+        
+        # Get docker-compose.yaml path
+        docker_compose_path = task_path / "docker-compose.yaml"
+        if not docker_compose_path.exists():
+            raise ValueError(f"docker-compose.yaml not found for task: {task_id}")
+        
+        # Check for task dependencies
+        task_deps_dir = task_path / "task-deps"
+        task_deps_path = str(task_deps_dir) if task_deps_dir.exists() else None
+        
+        # Create TerminalBenchTask object
+        task = TerminalBenchTask(
+            task_id=task_id,
+            task_path=str(task_path),
+            instruction=task_data.get('instruction', ''),
+            author_name=task_data.get('author_name', ''),
+            author_email=task_data.get('author_email', ''),
+            difficulty=task_data.get('difficulty', 'unknown'),
+            category=task_data.get('category', ''),
+            tags=task_data.get('tags', []),
+            parser_name=task_data.get('parser_name', 'pytest'),
+            max_agent_timeout_sec=task_data.get('max_agent_timeout_sec', 900.0),
+            max_test_timeout_sec=task_data.get('max_test_timeout_sec', 180.0),
+            run_tests_in_same_shell=task_data.get('run_tests_in_same_shell', False),
+            expert_time_estimate_min=task_data.get('expert_time_estimate_min'),
+            junior_time_estimate_min=task_data.get('junior_time_estimate_min'),
+            solution_commands=solution_commands,
+            test_file_path=str(test_file_path),
+            run_tests_script_path=str(run_tests_script_path),
+            dockerfile_path=str(dockerfile_path),
+            docker_compose_path=str(docker_compose_path),
+            task_deps_dir=task_deps_path
+        )
+        
+        self.logger.info(f"Successfully loaded task {task_id}: {task.instruction[:100]}...")
+        return task
+    
+    def load_tasks_from_dataset(self, task_ids: Optional[List[str]] = None, limit: Optional[int] = None) -> List[TerminalBenchTask]:
+        """
+        Load multiple Terminal-Bench tasks from the dataset.
+        
+        Args:
+            task_ids: Optional list of specific task IDs to load
+            limit: Optional limit on number of tasks to load
+            
+        Returns:
+            List of TerminalBenchTask objects
+        """
+        if task_ids:
+            # Load specific tasks
+            tasks = []
+            for task_id in task_ids:
+                try:
+                    task = self.load_task(task_id)
+                    tasks.append(task)
+                except Exception as e:
+                    self.logger.error(f"Failed to load task {task_id}: {e}")
+            return tasks
         else:
-            raise ValueError(f"Invalid dataset path: {dataset_path}")
+            # Load all tasks in dataset
+            all_task_dirs = [d for d in self.dataset_path.iterdir() if d.is_dir()]
+            
+            tasks = []
+            for task_dir in all_task_dirs:
+                try:
+                    task = self.load_task(task_dir.name)
+                    tasks.append(task)
+                    
+                    if limit and len(tasks) >= limit:
+                        break
+                        
+                except Exception as e:
+                    self.logger.error(f"Failed to load task {task_dir.name}: {e}")
+            
+            self.logger.info(f"Loaded {len(tasks)} Terminal-Bench tasks from dataset")
+            return tasks
     
-    def _load_file(self, file_path: Path) -> Dict[str, Any]:
-        """
-        Load a single dataset file.
+    def _load_solution_commands(self, task_path: Path) -> List[str]:
+        """Load solution commands from solution.sh or solution.yaml."""
+        solution_sh_path = task_path / "solution.sh"
+        solution_yaml_path = task_path / "solution.yaml"
         
-        Args:
-            file_path: Path to the dataset file
+        if solution_sh_path.exists():
+            # Load from solution.sh
+            with open(solution_sh_path, 'r') as f:
+                content = f.read()
             
-        Returns:
-            Dictionary containing the loaded dataset
-        """
-        file_extension = file_path.suffix.lower()
-        
-        if file_extension not in self.supported_formats:
-            raise ValueError(f"Unsupported file format: {file_extension}")
-        
-        self.logger.info(f"Loading file: {file_path} (format: {file_extension})")
-        
-        try:
-            if file_extension == '.json':
-                data = self._load_json(file_path)
-            elif file_extension == '.jsonl':
-                data = self._load_jsonl(file_path)
-            elif file_extension in {'.csv', '.tsv'}:
-                data = self._load_csv(file_path)
-            elif file_extension == '.txt':
-                data = self._load_txt(file_path)
-            else:
-                raise ValueError(f"Unhandled file format: {file_extension}")
-            
-            # Add metadata
-            dataset_info = {
-                "data": data,
-                "metadata": {
-                    "file_path": str(file_path),
-                    "file_format": file_extension,
-                    "file_size": file_path.stat().st_size,
-                    "num_records": len(data) if isinstance(data, list) else 1
-                }
-            }
-            
-            self.logger.info(f"Successfully loaded {dataset_info['metadata']['num_records']} records")
-            return dataset_info
-            
-        except Exception as e:
-            self.logger.error(f"Failed to load file {file_path}: {e}")
-            raise
-    
-    def _load_directory(self, dir_path: Path) -> Dict[str, Any]:
-        """
-        Load all datasets from a directory.
-        
-        Args:
-            dir_path: Path to the directory containing dataset files
-            
-        Returns:
-            Dictionary containing all loaded datasets
-        """
-        self.logger.info(f"Loading directory: {dir_path}")
-        
-        dataset_files = []
-        for file_path in dir_path.iterdir():
-            if file_path.is_file() and file_path.suffix.lower() in self.supported_formats:
-                dataset_files.append(file_path)
-        
-        if not dataset_files:
-            raise ValueError(f"No supported dataset files found in directory: {dir_path}")
-        
-        datasets = {}
-        for file_path in dataset_files:
-            try:
-                file_data = self._load_file(file_path)
-                datasets[file_path.stem] = file_data
-            except Exception as e:
-                self.logger.warning(f"Failed to load file {file_path}: {e}")
-                continue
-        
-        # Combine all datasets
-        combined_data = []
-        combined_metadata = {
-            "directory_path": str(dir_path),
-            "num_files": len(datasets),
-            "file_details": {}
-        }
-        
-        for name, dataset_info in datasets.items():
-            combined_data.extend(dataset_info["data"] if isinstance(dataset_info["data"], list) else [dataset_info["data"]])
-            combined_metadata["file_details"][name] = dataset_info["metadata"]
-        
-        result = {
-            "data": combined_data,
-            "metadata": combined_metadata
-        }
-        
-        self.logger.info(f"Successfully loaded {len(datasets)} files from directory")
-        return result
-    
-    def _load_json(self, file_path: Path) -> List[Dict[str, Any]]:
-        """Load JSON file."""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        # Ensure data is in list format for consistency
-        if isinstance(data, dict):
-            # If it's a single object, wrap it in a list
-            return [data]
-        elif isinstance(data, list):
-            return data
-        else:
-            raise ValueError(f"Unexpected JSON structure in {file_path}")
-    
-    def _load_jsonl(self, file_path: Path) -> List[Dict[str, Any]]:
-        """Load JSONL file."""
-        data = []
-        with open(file_path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
+            # Parse bash commands (simple approach - split by lines and filter)
+            commands = []
+            for line in content.split('\n'):
                 line = line.strip()
-                if line:
-                    try:
-                        data.append(json.loads(line))
-                    except json.JSONDecodeError as e:
-                        self.logger.warning(f"Invalid JSON on line {line_num} in {file_path}: {e}")
-                        continue
-        
-        return data
+                # Skip empty lines, comments, and shebang
+                if line and not line.startswith('#') and not line.startswith('#!/'):
+                    commands.append(line)
+            
+            return commands
+            
+        elif solution_yaml_path.exists():
+            # Load from solution.yaml
+            with open(solution_yaml_path, 'r') as f:
+                solution_data = yaml.safe_load(f)
+            
+            commands = []
+            for item in solution_data:
+                if isinstance(item, dict) and 'command' in item:
+                    commands.append(item['command'])
+                elif isinstance(item, str):
+                    commands.append(item)
+            
+            return commands
+        else:
+            raise ValueError(f"No solution file found for task: {task_path}")
     
-    def _load_csv(self, file_path: Path) -> List[Dict[str, Any]]:
-        """Load CSV or TSV file."""
-        try:
-            df = pd.read_csv(file_path)
-            return df.to_dict('records')
-        except Exception as e:
-            self.logger.error(f"Failed to load CSV file {file_path}: {e}")
-            raise
-    
-    def _load_txt(self, file_path: Path) -> List[Dict[str, Any]]:
-        """Load text file."""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # For text files, we'll create a simple structure
-        return [{"text": content, "file_path": str(file_path)}]
-    
-    def validate_dataset_format(self, dataset: Dict[str, Any]) -> bool:
+    def convert_to_internal_format(self, task: TerminalBenchTask) -> Dict[str, Any]:
         """
-        Validate that the dataset has the expected Terminal-Bench format.
+        Convert a TerminalBenchTask to our internal task format.
         
         Args:
-            dataset: Dataset to validate
+            task: TerminalBenchTask object
             
         Returns:
-            True if dataset format is valid, False otherwise
+            Dictionary in our internal task format
         """
-        try:
-            data = dataset.get("data", [])
-            if not isinstance(data, list):
-                return False
-            
-            # Check for required Terminal-Bench fields
-            required_fields = {"instruction", "environment", "test"}
-            optional_fields = {"id", "difficulty", "category", "tags"}
-            
-            for record in data[:5]:  # Check first 5 records as sample
-                if not isinstance(record, dict):
-                    return False
-                
-                # Check if at least some required fields are present
-                record_fields = set(record.keys())
-                if not required_fields.intersection(record_fields):
-                    self.logger.warning(f"Record missing required fields: {record_fields}")
-                    continue
-            
-            self.logger.info("Dataset format validation passed")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Dataset format validation failed: {e}")
-            return False
-    
-    def get_dataset_statistics(self, dataset: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Get statistics about the dataset.
-        
-        Args:
-            dataset: Dataset to analyze
-            
-        Returns:
-            Dictionary containing dataset statistics
-        """
-        data = dataset.get("data", [])
-        metadata = dataset.get("metadata", {})
-        
-        stats = {
-            "total_records": len(data),
-            "metadata": metadata
+        return {
+            "id": task.task_id,
+            "instruction": task.instruction,
+            "test": f"Run pytest tests in {task.test_file_path}",
+            "environment": {
+                "working_directory": "/app",
+                "max_agent_timeout_sec": task.max_agent_timeout_sec,
+                "max_test_timeout_sec": task.max_test_timeout_sec,
+                "run_tests_in_same_shell": task.run_tests_in_same_shell
+            },
+            "metadata": {
+                "author_name": task.author_name,
+                "author_email": task.author_email,
+                "difficulty": task.difficulty,
+                "category": task.category,
+                "tags": task.tags,
+                "parser_name": task.parser_name,
+                "expert_time_estimate_min": task.expert_time_estimate_min,
+                "junior_time_estimate_min": task.junior_time_estimate_min,
+                "solution_commands": task.solution_commands,
+                "test_file_path": task.test_file_path,
+                "run_tests_script_path": task.run_tests_script_path,
+                "dockerfile_path": task.dockerfile_path,
+                "docker_compose_path": task.docker_compose_path,
+                "task_deps_dir": task.task_deps_dir
+            }
         }
+    
+    def list_available_tasks(self) -> List[str]:
+        """
+        List all available task IDs in the dataset.
         
-        if data and isinstance(data[0], dict):
-            # Analyze field distribution
-            field_counts = {}
-            field_types = {}
-            
-            for record in data:
-                for field, value in record.items():
-                    field_counts[field] = field_counts.get(field, 0) + 1
-                    field_types[field] = type(value).__name__
-            
-            stats["field_distribution"] = field_counts
-            stats["field_types"] = field_types
-        
-        return stats
-
+        Returns:
+            List of task IDs
+        """
+        task_dirs = [d.name for d in self.dataset_path.iterdir() if d.is_dir()]
+        return sorted(task_dirs)

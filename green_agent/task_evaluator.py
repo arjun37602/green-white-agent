@@ -5,10 +5,10 @@ This module provides comprehensive evaluation capabilities for terminal tasks,
 including correctness checking, performance measurement, and safety validation.
 """
 
-import os
-import re
 import json
 import logging
+import os
+import re
 import subprocess
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
@@ -48,7 +48,8 @@ class TaskEvaluator:
         self.logger = logging.getLogger(__name__)
     
     def evaluate(self, task_id: str, task_spec: Dict[str, Any], 
-                command_history: List[CommandResult], sandbox_state: SandboxState) -> EvaluationResult:
+                 command_history: List[CommandResult], sandbox_state: SandboxState, 
+                 sandbox_manager=None, sandbox_id: str = None) -> EvaluationResult:
         """
         Comprehensive task evaluation.
         
@@ -67,10 +68,24 @@ class TaskEvaluator:
         criteria = self._extract_criteria(task_spec)
         
         # Perform different types of evaluation
+        # Try to run Terminal-Bench pytest tests first
+        pytest_results = None
+        if sandbox_manager and sandbox_id and "metadata" in task_spec:
+            pytest_results = self._run_terminal_bench_tests(sandbox_manager, sandbox_id, task_spec["metadata"])
+        
+        unit_test_correctness = {"passed": True, "tests_run": 0, "tests_passed": 0, "details": "No pytest tests run"}
+        if pytest_results:
+            unit_test_correctness = pytest_results
+        
         correctness_result = self._evaluate_correctness(criteria, command_history, sandbox_state)
         performance_result = self._evaluate_performance(command_history)
         safety_result = self._evaluate_safety(criteria, command_history)
         efficiency_result = self._evaluate_efficiency(criteria, command_history)
+        
+        # Override correctness with pytest results if available
+        if pytest_results and pytest_results["tests_run"] > 0:
+            correctness_result["passed"] = pytest_results["passed"]
+            correctness_result["unit_tests"] = pytest_results
         
         # Calculate overall score
         overall_score = self._calculate_score(correctness_result, performance_result, safety_result, efficiency_result)
@@ -300,6 +315,96 @@ class TaskEvaluator:
         
         return {"exists": False, "content_matches": False, "content": None}
     
+    def _run_terminal_bench_tests(self, sandbox_manager, sandbox_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Run Terminal-Bench pytest tests in the sandbox.
+        
+        Args:
+            sandbox_manager: Sandbox manager instance
+            sandbox_id: ID of the sandbox
+            metadata: Task metadata containing test file path
+            
+        Returns:
+            Dictionary with test results
+        """
+        try:
+            test_file_path = metadata.get("test_file_path")
+            if not test_file_path or not os.path.exists(test_file_path):
+                self.logger.warning("No valid test file found in metadata")
+                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "No test file found"}
+            
+            # Copy test file to sandbox
+            test_filename = os.path.basename(test_file_path)
+            sandbox_test_path = f"app/{test_filename}"
+            
+            # Create app directory first
+            mkdir_result = sandbox_manager.execute_command(
+                sandbox_id,
+                "mkdir -p app"
+            )
+            
+            if not mkdir_result.success:
+                self.logger.warning(f"Failed to create app directory: {mkdir_result.stderr}")
+            
+            # Copy test file to sandbox
+            copy_result = sandbox_manager.execute_command(
+                sandbox_id, 
+                f"cp {test_file_path} {sandbox_test_path}"
+            )
+            
+            if not copy_result.success:
+                self.logger.error(f"Failed to copy test file to sandbox: {copy_result.stderr}")
+                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "Failed to copy test file"}
+            
+            # Install pytest in sandbox
+            install_result = sandbox_manager.execute_command(
+                sandbox_id,
+                "pip install pytest"
+            )
+            
+            if not install_result.success:
+                self.logger.warning(f"Failed to install pytest: {install_result.stderr}")
+                # Try to continue anyway - pytest might already be installed
+            
+            # Run pytest
+            pytest_result = sandbox_manager.execute_command(
+                sandbox_id,
+                f"python -m pytest {sandbox_test_path} -v"
+            )
+            
+            # Parse pytest output
+            output = pytest_result.stdout + pytest_result.stderr
+            
+            # Count tests
+            import re
+            test_matches = re.findall(r"test_\w+", output)
+            tests_run = len(set(test_matches))
+            
+            # Count passed tests
+            passed_matches = re.findall(r"PASSED", output)
+            tests_passed = len(passed_matches)
+            
+            # Count failed tests
+            failed_matches = re.findall(r"FAILED", output)
+            tests_failed = len(failed_matches)
+            
+            passed = pytest_result.success and tests_failed == 0
+            
+            self.logger.info(f"Pytest results: {tests_passed}/{tests_run} tests passed, {tests_failed} failed")
+            
+            return {
+                "passed": passed,
+                "tests_run": tests_run,
+                "tests_passed": tests_passed,
+                "tests_failed": tests_failed,
+                "details": f"Pytest: {tests_passed}/{tests_run} passed",
+                "raw_output": output
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error running Terminal-Bench tests: {e}")
+            return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": f"Error: {e}"}
+    
     def _check_output_requirement(self, pattern: str, command_history: List[CommandResult]) -> Dict[str, Any]:
         """Check if an output requirement is met."""
         all_output = ""
@@ -338,8 +443,8 @@ class TaskEvaluator:
                 last_command_success = command_history[-1].success
                 return {"satisfied": last_command_success, "condition": condition, "details": "Last command success"}
         
-        # Default: assume condition is met if we have commands
-        return {"satisfied": len(command_history) > 0, "condition": condition, "details": "Default check"}
+        # Default: be strict - only pass if we can verify the condition
+        return {"satisfied": False, "condition": condition, "details": "No specific condition matched - strict evaluation"}
     
     def _detect_redundant_commands(self, command_history: List[CommandResult]) -> List[str]:
         """Detect redundant or inefficient commands."""
