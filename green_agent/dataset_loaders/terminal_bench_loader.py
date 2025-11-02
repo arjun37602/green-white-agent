@@ -67,6 +67,9 @@ class TerminalBenchTaskLoader:
             
         Returns:
             TerminalBenchTask object
+            
+        Raises:
+            ValueError: If required files are missing
         """
         task_path = self.dataset_path / task_id
         
@@ -83,28 +86,33 @@ class TerminalBenchTaskLoader:
         with open(task_yaml_path, 'r') as f:
             task_data = yaml.safe_load(f)
         
+        if not task_data:
+            raise ValueError(f"task.yaml is empty for task: {task_id}")
+        
         # Load solution commands
         solution_commands = self._load_solution_commands(task_path)
         
-        # Get test file path
+        # Get test file path (required)
         test_file_path = task_path / "tests" / "test_outputs.py"
         if not test_file_path.exists():
             raise ValueError(f"test_outputs.py not found for task: {task_id}")
         
-        # Get run-tests.sh path
+        # Get run-tests.sh path (required)
         run_tests_script_path = task_path / "run-tests.sh"
         if not run_tests_script_path.exists():
             raise ValueError(f"run-tests.sh not found for task: {task_id}")
         
-        # Get Dockerfile path
+        # Get Dockerfile path (optional - some tasks may not have Docker)
         dockerfile_path = task_path / "Dockerfile"
         if not dockerfile_path.exists():
-            raise ValueError(f"Dockerfile not found for task: {task_id}")
+            self.logger.warning(f"Dockerfile not found for task {task_id}, using None")
+            dockerfile_path = None
         
-        # Get docker-compose.yaml path
+        # Get docker-compose.yaml path (optional)
         docker_compose_path = task_path / "docker-compose.yaml"
         if not docker_compose_path.exists():
-            raise ValueError(f"docker-compose.yaml not found for task: {task_id}")
+            self.logger.warning(f"docker-compose.yaml not found for task {task_id}, using None")
+            docker_compose_path = None
         
         # Check for task dependencies
         task_deps_dir = task_path / "task-deps"
@@ -129,8 +137,8 @@ class TerminalBenchTaskLoader:
             solution_commands=solution_commands,
             test_file_path=str(test_file_path),
             run_tests_script_path=str(run_tests_script_path),
-            dockerfile_path=str(dockerfile_path),
-            docker_compose_path=str(docker_compose_path),
+            dockerfile_path=str(dockerfile_path) if dockerfile_path else "",
+            docker_compose_path=str(docker_compose_path) if docker_compose_path else "",
             task_deps_dir=task_deps_path
         )
         
@@ -178,38 +186,71 @@ class TerminalBenchTaskLoader:
             return tasks
     
     def _load_solution_commands(self, task_path: Path) -> List[str]:
-        """Load solution commands from solution.sh or solution.yaml."""
+        """
+        Load solution commands from solution.sh or solution.yaml.
+        
+        Args:
+            task_path: Path to the task directory
+            
+        Returns:
+            List of solution commands
+            
+        Raises:
+            ValueError: If no solution file found or file is empty
+        """
         solution_sh_path = task_path / "solution.sh"
         solution_yaml_path = task_path / "solution.yaml"
         
         if solution_sh_path.exists():
             # Load from solution.sh
-            with open(solution_sh_path, 'r') as f:
-                content = f.read()
-            
-            # Parse bash commands (simple approach - split by lines and filter)
-            commands = []
-            for line in content.split('\n'):
-                line = line.strip()
-                # Skip empty lines, comments, and shebang
-                if line and not line.startswith('#') and not line.startswith('#!/'):
-                    commands.append(line)
-            
-            return commands
+            try:
+                with open(solution_sh_path, 'r') as f:
+                    content = f.read()
+                
+                if not content.strip():
+                    raise ValueError(f"solution.sh is empty for task: {task_path.name}")
+                
+                # Parse bash commands (simple approach - split by lines and filter)
+                commands = []
+                for line in content.split('\n'):
+                    line = line.strip()
+                    # Skip empty lines, comments, and shebang
+                    if line and not line.startswith('#') and not line.startswith('#!/'):
+                        commands.append(line)
+                
+                if not commands:
+                    self.logger.warning(f"No commands found in solution.sh for task: {task_path.name}")
+                    return []
+                
+                return commands
+            except Exception as e:
+                raise ValueError(f"Failed to read solution.sh for task {task_path.name}: {e}")
             
         elif solution_yaml_path.exists():
             # Load from solution.yaml
-            with open(solution_yaml_path, 'r') as f:
-                solution_data = yaml.safe_load(f)
-            
-            commands = []
-            for item in solution_data:
-                if isinstance(item, dict) and 'command' in item:
-                    commands.append(item['command'])
-                elif isinstance(item, str):
-                    commands.append(item)
-            
-            return commands
+            try:
+                with open(solution_yaml_path, 'r') as f:
+                    solution_data = yaml.safe_load(f)
+                
+                if not solution_data:
+                    raise ValueError(f"solution.yaml is empty for task: {task_path.name}")
+                
+                commands = []
+                for item in solution_data:
+                    if isinstance(item, dict) and 'command' in item:
+                        commands.append(item['command'])
+                    elif isinstance(item, str):
+                        commands.append(item)
+                
+                if not commands:
+                    self.logger.warning(f"No commands found in solution.yaml for task: {task_path.name}")
+                    return []
+                
+                return commands
+            except yaml.YAMLError as e:
+                raise ValueError(f"Failed to parse solution.yaml for task {task_path.name}: {e}")
+            except Exception as e:
+                raise ValueError(f"Failed to read solution.yaml for task {task_path.name}: {e}")
         else:
             raise ValueError(f"No solution file found for task: {task_path}")
     

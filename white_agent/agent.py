@@ -5,10 +5,11 @@ This module implements a fully compliant A2A (Agent-to-Agent) protocol agent
 following the official specification at https://google.github.io/a2a-protocol-spec/
 """
 import os
+import sys
 import logging
 import json
 import subprocess
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from openai import OpenAI
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -182,6 +183,8 @@ class TerminalBenchAgent:
     def execute_bash_command(self, command: str, working_directory: str = None) -> Dict[str, Any]:
         """Execute a bash command and return the result."""
         try:
+            sys.stderr.write(f"   💻 Executing: {command}\n")
+            sys.stderr.flush()
             self.logger.info(f"🔧 Executing command: {command}")
             result = subprocess.run(
                 command,
@@ -199,6 +202,13 @@ class TerminalBenchAgent:
                 "success": result.returncode == 0
             }
             
+            if result.stdout:
+                sys.stderr.write(f"   📤 stdout: {result.stdout[:200]}{'...' if len(result.stdout) > 200 else ''}\n")
+            if result.stderr:
+                sys.stderr.write(f"   ⚠️  stderr: {result.stderr[:200]}{'...' if len(result.stderr) > 200 else ''}\n")
+            sys.stderr.write(f"   📊 returncode: {result.returncode}\n")
+            sys.stderr.flush()
+            
             self.logger.info(f"✅ Command output: {output['stdout'][:200]}")
             return output
         except subprocess.TimeoutExpired:
@@ -210,9 +220,13 @@ class TerminalBenchAgent:
     def read_file(self, file_path: str) -> Dict[str, Any]:
         """Read a file and return its contents."""
         try:
+            sys.stderr.write(f"   📖 Reading file: {file_path}\n")
+            sys.stderr.flush()
             self.logger.info(f"📖 Reading file: {file_path}")
             with open(file_path, 'r') as f:
                 content = f.read()
+            sys.stderr.write(f"   ✅ File content ({len(content)} chars): {content[:200]}{'...' if len(content) > 200 else ''}\n")
+            sys.stderr.flush()
             return {"content": content, "success": True}
         except Exception as e:
             self.logger.error(f"Error reading file: {e}")
@@ -221,17 +235,30 @@ class TerminalBenchAgent:
     def write_file(self, file_path: str, content: str) -> Dict[str, Any]:
         """Write content to a file."""
         try:
+            sys.stderr.write(f"   ✍️  Writing to file: {file_path}\n")
+            sys.stderr.write(f"   📝 Content ({len(content)} chars): {content[:200]}{'...' if len(content) > 200 else ''}\n")
+            sys.stderr.flush()
             self.logger.info(f"✍️ Writing to file: {file_path}")
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, 'w') as f:
                 f.write(content)
+            sys.stderr.write(f"   ✅ File written successfully\n")
+            sys.stderr.flush()
             return {"success": True}
         except Exception as e:
             self.logger.error(f"Error writing file: {e}")
             return {"error": str(e), "success": False}
     
-    def solve_problem(self, problem_description: str) -> str:
-        """Solve a terminal bench problem using OpenAI with tool calling."""
+    def solve_problem(self, problem_description: str) -> Tuple[str, Dict[str, Any]]:
+        """Solve a terminal bench problem using OpenAI with tool calling.
+        
+        Returns:
+            Tuple of (solution_text, usage_info) where usage_info contains:
+            - total_tokens: Total tokens used
+            - prompt_tokens: Prompt tokens used
+            - completion_tokens: Completion tokens used
+            - request_count: Number of API requests made
+        """
         system_prompt = """You are an expert in terminal operations, system administration, and programming.
         You have access to tools to execute bash commands, read files, and write files.
         Use these tools to solve terminal bench problems step by step.
@@ -247,6 +274,12 @@ class TerminalBenchAgent:
         tool_call_log = []
         max_iterations = 10
         
+        # Track token usage across all API calls
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_tokens = 0
+        request_count = 0
+        
         try:
             for iteration in range(max_iterations):
                 response = self.client.chat.completions.create(
@@ -258,14 +291,47 @@ class TerminalBenchAgent:
                     temperature=0.3
                 )
                 
+                request_count += 1
+                
+                # Extract token usage from response
+                if hasattr(response, 'usage') and response.usage:
+                    usage = response.usage
+                    if hasattr(usage, 'prompt_tokens'):
+                        total_prompt_tokens += usage.prompt_tokens
+                    if hasattr(usage, 'completion_tokens'):
+                        total_completion_tokens += usage.completion_tokens
+                    if hasattr(usage, 'total_tokens'):
+                        total_tokens += usage.total_tokens
+                
+                # Print token usage for this request to stderr
+                if hasattr(response, 'usage') and response.usage:
+                    request_usage = response.usage
+                    sys.stderr.write(f"\n{'='*60}\n")
+                    sys.stderr.write(f"📊 API Request #{request_count} - Token Usage:\n")
+                    sys.stderr.write(f"   Prompt Tokens: {request_usage.prompt_tokens if hasattr(request_usage, 'prompt_tokens') else 'N/A'}\n")
+                    sys.stderr.write(f"   Completion Tokens: {request_usage.completion_tokens if hasattr(request_usage, 'completion_tokens') else 'N/A'}\n")
+                    sys.stderr.write(f"   Total Tokens: {request_usage.total_tokens if hasattr(request_usage, 'total_tokens') else 'N/A'}\n")
+                    sys.stderr.write(f"   Cumulative Total: {total_tokens}\n")
+                    sys.stderr.flush()
+                
                 assistant_message = response.choices[0].message
                 messages.append(assistant_message)
+                
+                # Print assistant's response to stderr
+                if assistant_message.content:
+                    sys.stderr.write(f"\n🤖 Assistant Response:\n")
+                    sys.stderr.write(f"   {assistant_message.content[:300]}{'...' if len(assistant_message.content) > 300 else ''}\n")
+                    sys.stderr.flush()
                 
                 # Check if the model wants to call a function
                 if assistant_message.tool_calls:
                     for tool_call in assistant_message.tool_calls:
                         function_name = tool_call.function.name
                         function_args = json.loads(tool_call.function.arguments)
+                        
+                        sys.stderr.write(f"\n🔧 Tool Call #{len(tool_call_log) + 1}: {function_name}\n")
+                        sys.stderr.write(f"   Arguments: {json.dumps(function_args, indent=2)}\n")
+                        sys.stderr.flush()
                         
                         self.logger.info(f"🔧 Tool call: {function_name}({function_args})")
                         tool_call_log.append(f"Tool: {function_name} | Args: {function_args}")
@@ -280,6 +346,15 @@ class TerminalBenchAgent:
                         else:
                             function_response = {"error": f"Unknown function: {function_name}"}
                         
+                        # Print tool response to stderr
+                        sys.stderr.write(f"   ✅ Tool Response:\n")
+                        response_str = json.dumps(function_response, indent=2)
+                        if len(response_str) > 200:
+                            sys.stderr.write(f"   {response_str[:200]}...\n")
+                        else:
+                            sys.stderr.write(f"   {response_str}\n")
+                        sys.stderr.flush()
+                        
                         # Add function response to messages
                         messages.append({
                             "role": "tool",
@@ -291,18 +366,53 @@ class TerminalBenchAgent:
                     # No more tool calls, return the final response
                     final_response = assistant_message.content or "Task completed"
                     
+                    sys.stderr.write(f"\n✅ Final Response:\n")
+                    sys.stderr.write(f"   {final_response[:500]}{'...' if len(final_response) > 500 else ''}\n")
+                    sys.stderr.flush()
+                    
                     # Add tool call log
                     if tool_call_log:
                         final_response += "\n\n=== Tool Execution Log ===\n"
                         final_response += "\n".join(tool_call_log)
                     
-                    return final_response
+                    # Prepare usage information
+                    usage_info = {
+                        "total_tokens": total_tokens,
+                        "prompt_tokens": total_prompt_tokens,
+                        "completion_tokens": total_completion_tokens,
+                        "request_count": request_count
+                    }
+                    
+                    sys.stderr.write(f"\n📊 Total Token Usage Summary:\n")
+                    sys.stderr.write(f"   Total Tokens: {total_tokens}\n")
+                    sys.stderr.write(f"   Prompt Tokens: {total_prompt_tokens}\n")
+                    sys.stderr.write(f"   Completion Tokens: {total_completion_tokens}\n")
+                    sys.stderr.write(f"   Requests: {request_count}\n")
+                    sys.stderr.write(f"   Tokens Per Request: {total_tokens / request_count if request_count > 0 else 0:.2f}\n")
+                    sys.stderr.write(f"{'='*60}\n\n")
+                    sys.stderr.flush()
+                    
+                    self.logger.info(f"Token usage: {usage_info}")
+                    return final_response, usage_info
             
-            return "Maximum iterations reached. Task may not be complete."
+            # Maximum iterations reached
+            usage_info = {
+                "total_tokens": total_tokens,
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "request_count": request_count
+            }
+            return "Maximum iterations reached. Task may not be complete.", usage_info
             
         except Exception as e:
             self.logger.error(f"Error solving problem: {e}")
-            return f"Error: {str(e)}"
+            usage_info = {
+                "total_tokens": total_tokens,
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "request_count": request_count
+            }
+            return f"Error: {str(e)}", usage_info
     
     def handle_message(self, message: Message) -> Task:
         """
@@ -327,8 +437,16 @@ class TerminalBenchAgent:
             # Store the incoming message
             self.contexts[context_id].append(message)
             
-            # Solve the problem
-            solution = self.solve_problem(problem_description)
+            # Print incoming task to stderr so it shows in terminal even when stdout is redirected
+            sys.stderr.write(f"\n{'='*60}\n")
+            sys.stderr.write(f"📨 Received Task Request:\n")
+            sys.stderr.write(f"   Task ID: {context_id}\n")
+            sys.stderr.write(f"   Description: {problem_description[:200]}{'...' if len(problem_description) > 200 else ''}\n")
+            sys.stderr.write(f"{'='*60}\n")
+            sys.stderr.flush()
+            
+            # Solve the problem and get token usage
+            solution, usage_info = self.solve_problem(problem_description)
             
             # Create artifact with the solution
             artifact = create_text_artifact(
@@ -344,12 +462,24 @@ class TerminalBenchAgent:
                 context_id=context_id
             )
             
-            # Create completed task
+            # Create completed task with token usage in metadata
             task = create_completed_task(
                 message=agent_message,
                 artifacts=[artifact],
                 context_id=context_id
             )
+            
+            # Add token usage to task metadata
+            task.metadata = {
+                "usage": {
+                    "total_tokens": usage_info.get("total_tokens", 0),
+                    "prompt_tokens": usage_info.get("prompt_tokens", 0),
+                    "completion_tokens": usage_info.get("completion_tokens", 0)
+                },
+                "request_count": usage_info.get("request_count", 1)
+            }
+            
+            self.logger.info(f"Task {task.id} completed with token usage: {task.metadata['usage']}")
             
             # Store task
             self.tasks[task.id] = task
@@ -691,31 +821,31 @@ if __name__ == "__main__":
         print(f"Agent '{agent.name}' initialized with model '{agent.model}'")
         
         # Test the A2A agent
-    test_agent = TerminalBenchAgent()
-    print(f"A2A-compatible agent: {test_agent.name}")
-    print(f"Skills: {[skill.name for skill in test_agent.skills]}")
-    
-    # Test a simple problem
-    sample_problem = "Write a bash script to find all files larger than 100MB in the current directory"
-    print(f"\nTesting with sample problem: {sample_problem}")
-    # Note: Uncomment the next line to test with OpenAI (requires API key)
-    # print(f"Response: {test_agent.solve_problem(sample_problem)}")
+        test_agent = TerminalBenchAgent()
+        print(f"A2A-compatible agent: {test_agent.name}")
+        print(f"Skills: {[skill.name for skill in test_agent.skills]}")
+        
+        # Test a simple problem
+        sample_problem = "Write a bash script to find all files larger than 100MB in the current directory"
+        print(f"\nTesting with sample problem: {sample_problem}")
+        # Note: Uncomment the next line to test with OpenAI (requires API key)
+        # print(f"Response: {test_agent.solve_problem(sample_problem)}")
         
         # Test A2A message handling
-    print("\n🔧 Testing A2A message handling...")
-    test_message = create_text_message(
-        text=sample_problem,
-        role="user"
-    )
-    
-    try:
-        task = test_agent.handle_message(test_message)
-        print(f"✅ A2A message handling successful")
-        print(f"Task ID: {task.id}")
-        print(f"Status: {task.status.state}")
-        print(f"Context ID: {task.contextId}")
-        print(f"Artifacts: {len(task.artifacts)}")
-        if task.artifacts:
-            print(f"Response length: {len(task.artifacts[0].parts[0].text)} characters")
-    except Exception as e:
-        print(f"❌ A2A message handling failed: {e}")
+        print("\n🔧 Testing A2A message handling...")
+        test_message = create_text_message(
+            text=sample_problem,
+            role="user"
+        )
+        
+        try:
+            task = test_agent.handle_message(test_message)
+            print(f"✅ A2A message handling successful")
+            print(f"Task ID: {task.id}")
+            print(f"Status: {task.status.state}")
+            print(f"Context ID: {task.contextId}")
+            print(f"Artifacts: {len(task.artifacts)}")
+            if task.artifacts:
+                print(f"Response length: {len(task.artifacts[0].parts[0].text)} characters")
+        except Exception as e:
+            print(f"❌ A2A message handling failed: {e}")

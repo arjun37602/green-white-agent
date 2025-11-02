@@ -29,37 +29,37 @@ pip install -e .
 ### Starting the A2A Server
 
 ```bash
-# Start the A2A-compatible server
-python white_agent/agent.py --server
+# Start the simple template-based agent server (for testing)
+python white_agent/simple_agent.py --server --port 8002
 
-# Start on custom port/host
+# Start the full OpenAI-powered agent server
 python white_agent/agent.py --server --port 8001 --host 0.0.0.0
 ```
 
 ### Testing the Agent
 
 ```bash
-# Run local tests
-python white_agent/agent.py --test
+# Run simple agent tests
+python white_agent/simple_agent.py --test
 
 # Run comprehensive A2A integration tests
-python test_a2a_integration.py
+python tests/test_a2a_protocol.py
 ```
 
 ### Converting Terminal Bench Problems
 
 ```bash
 # Convert problems to A2A format and send to agent
-python terminal_bench_to_a2a_converter.py sample_terminal_bench.json
+python scripts/terminal_bench_to_a2a_converter.py sample_terminal_bench.json
 
 # Create A2A test suite
-python terminal_bench_to_a2a_converter.py sample_terminal_bench.json --create-test-suite
+python scripts/terminal_bench_to_a2a_converter.py sample_terminal_bench.json --create-test-suite
 
 # Check agent health
-python terminal_bench_to_a2a_converter.py --check-agent
+python scripts/terminal_bench_to_a2a_converter.py --check-agent
 
 # Get agent card
-python terminal_bench_to_a2a_converter.py --agent-card
+python scripts/terminal_bench_to_a2a_converter.py --agent-card
 ```
 
 ### Using the Green Agent
@@ -130,20 +130,33 @@ When running the server, the following endpoints are available:
 
 ```
 green-white-agent/
-├── green_agent/
+├── green_agent/              # Green Agent (Evaluation)
 │   ├── __init__.py
-│   ├── agent.py              # Main green agent implementation
-│   └── dataset_loaders/      # Dataset loading utilities
+│   ├── terminal_bench_runner.py  # Main runner
+│   ├── sandbox_manager.py        # Sandbox isolation
+│   ├── task_evaluator.py         # Task evaluation
+│   └── dataset_loaders/
 │       └── terminal_bench_loader.py
-├── white_agent/
-│   ├── agent.py              # A2A-compatible white agent
-│   └── requirements.txt      # White agent dependencies
-├── terminal_bench_to_a2a_converter.py  # A2A format converter
-├── test_a2a_integration.py   # A2A integration tests
-├── test_a2a_setup.py         # Setup validation tests
-├── sample_terminal_bench.json # Sample terminal bench problems
-├── terminal_bench_a2a_test_suite.json # A2A test suite
-├── requirements.txt          # Main dependencies
+├── white_agent/              # White Agent (Problem Solving)
+│   ├── __init__.py
+│   ├── agent.py                 # A2A-compatible agent with OpenAI
+│   ├── simple_agent.py          # Template-based test agent
+│   ├── a2a_protocol.py          # A2A protocol models
+│   └── requirements.txt
+├── examples/                 # Example scripts and demos
+│   ├── demo_green_agent.py
+│   ├── demo_real_terminalbench.py
+│   ├── demo_terminalbench_system.py
+│   └── debug_*.py
+├── tests/                    # Test suite
+│   ├── test_a2a_protocol.py
+│   ├── test_green_agent.py
+│   └── test_*.py
+├── scripts/                  # Utility scripts
+│   ├── run_agent.py
+│   └── terminal_bench_to_a2a_converter.py
+├── data/                     # Sample data and artifacts
+├── requirements.txt
 ├── setup.py
 └── README.md
 ```
@@ -153,19 +166,32 @@ green-white-agent/
 ### Run All Tests
 
 ```bash
-# Quick agent test
-python white_agent/agent.py --test
+# Quick simple agent test
+python white_agent/simple_agent.py --test
 
 # A2A protocol compliance tests (requires server running)
-# Terminal 1: Start server
-python white_agent/agent.py --server --port 8002
+# Terminal 1: Start simple agent server
+python white_agent/simple_agent.py --server --port 8002
 
-# Terminal 2: Run tests
-python test_a2a_protocol.py
+# Terminal 2: Run A2A protocol tests
+python tests/test_a2a_protocol.py
 
-# Legacy integration tests
-python test_a2a_integration.py
+# Green agent tests
+python tests/test_green_agent.py
 
-# Setup validation
-python test_a2a_setup.py
+# Simple terminal bench task test
+python tests/test_simple_tb_task.py
+```
+
+### Running Examples
+
+```bash
+# Demo green agent capabilities
+python examples/demo_green_agent.py
+
+# Demo complete terminal bench system
+python examples/demo_terminalbench_system.py
+
+# Demo with real terminal bench tasks
+python examples/demo_real_terminalbench.py
 ```

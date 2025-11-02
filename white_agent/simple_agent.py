@@ -15,7 +15,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 import uuid
 
-from white_agent.a2a_protocol import (
+from a2a_protocol import (
     Message, Task, TaskStatus, Artifact, TextPart,
     JsonRpcRequest, JsonRpcResponse, JsonRpcError,
     create_text_message, create_text_artifact
@@ -309,6 +309,16 @@ These commands should complete the requested task."""
                 artifacts=[artifact],
                 history=[message, agent_message]
             )
+            
+            # Add token usage metadata (set to 0 since simple agent doesn't use LLM)
+            task.metadata = {
+                "usage": {
+                    "total_tokens": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0
+                },
+                "request_count": 1
+            }
             
             self.logger.info(f"Task completed with {len(commands)} commands")
             return task

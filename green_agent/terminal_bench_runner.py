@@ -168,7 +168,7 @@ class GreenAgentTerminalBench:
             # Step 5: Evaluate task completion
             evaluation_result = self.task_evaluator.evaluate(
                 task_id, task, command_history, final_sandbox_state, 
-                self.sandbox_manager, sandbox_id
+                self.sandbox_manager, sandbox_id, white_agent_response
             )
             
             # Step 6: Clean up sandbox
@@ -369,6 +369,10 @@ Complete this task and verify it passes the tests.
             
             if response.status_code == 200:
                 result = response.json()
+                
+                # Debug: Log response structure to inspect token/request data
+                self.logger.debug(f"White agent response structure for task {task.get('id', 'unknown')}: "
+                                f"{json.dumps(result, indent=2)[:1000]}")
                 
                 # Check if the task was completed successfully
                 if "result" in result and result["result"]:
