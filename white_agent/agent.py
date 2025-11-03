@@ -9,7 +9,9 @@ import sys
 import logging
 import json
 import subprocess
+import re
 from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -37,7 +39,7 @@ load_dotenv()
 class TerminalBenchAgent:
     """A2A-compliant agent for handling terminal bench problems."""
     
-    def __init__(self, model="gpt-4o-mini", name="terminal_bench_agent", base_url="http://localhost:8001"):
+    def __init__(self, model="gpt-5", name="terminal_bench_agent", base_url="http://localhost:8001", log_dir=None):
         self.model = model
         self.name = name
         self.base_url = base_url
@@ -49,6 +51,13 @@ class TerminalBenchAgent:
             raise ValueError("OPENAI_API_KEY environment variable is required")
         
         self.client = OpenAI(api_key=api_key)
+        
+        # Set up chat completion logging
+        if log_dir is None:
+            log_dir = os.path.join(os.getcwd(), "logs", "openai_chat")
+        self.log_dir = log_dir
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.logger.info(f"OpenAI chat logs will be saved to: {self.log_dir}")
         
         # Store for active tasks and contexts
         self.tasks: Dict[str, Task] = {}
@@ -259,17 +268,68 @@ class TerminalBenchAgent:
             - completion_tokens: Completion tokens used
             - request_count: Number of API requests made
         """
+        # Create log file for this conversation
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Extract task ID or use timestamp
+        task_id_match = re.search(r'Task:\s*(\S+)', problem_description)
+        task_id = task_id_match.group(1) if task_id_match else "unknown"
+        log_file = os.path.join(self.log_dir, f"chat_{task_id}_{timestamp}.jsonl")
+        
+        def log_to_file(entry_type: str, data: Dict[str, Any]):
+            """Log entry to JSONL file"""
+            entry = {
+                "timestamp": datetime.now().isoformat(),
+                "type": entry_type,
+                "data": data
+            }
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        
+        self.logger.info(f"📝 Logging OpenAI chat to: {log_file}")
+        log_to_file("conversation_start", {
+            "model": self.model,
+            "task_id": task_id,
+            "problem_description": problem_description[:500]  # First 500 chars
+        })
+        
         system_prompt = """You are an expert in terminal operations, system administration, and programming.
         You have access to tools to execute bash commands, read files, and write files.
         Use these tools to solve terminal bench problems step by step.
         
-        Always verify your work by checking the results of commands before proceeding.
-        Be precise and practical in your solutions."""
+        CRITICAL INSTRUCTIONS FOR TERMINAL BENCH TASKS:
+        1. EXACT PATH MATCHING: If the instruction specifies an absolute path (starting with /), 
+           you MUST use that exact absolute path in your commands. Do NOT use relative paths when 
+           absolute paths are specified.
+        2. EXACT CASE MATCHING: Preserve the exact case, capitalization, and punctuation from the 
+           instructions. If the instruction says "Hello, world!" use exactly that - do not change 
+           it to "hello, world!" or any other variation.
+        3. EXACT CONTENT: Write the exact content specified in the instructions. When instructions say 
+           'Write "text" to file', the quotes are just indicating what to write - write only the text 
+           between the quotes, not the quotes themselves. Match capitalization and punctuation exactly.
+        4. ENVIRONMENT CONSTRAINTS: If you get permission errors for /app or other paths, provide the 
+           solution as bash commands instead. Return a simple text response with the exact commands needed,
+           without explanations or logs.
+        5. PRECISION: Be precise and follow instructions literally - Terminal Bench tests are strict 
+           and case-sensitive.
+        
+        When you cannot execute commands due to environment constraints, provide the solution as:
+        ```bash
+        mkdir -p /app
+        echo 'content' > /app/file.txt
+        ```
+        
+        Keep your response concise - just the commands needed, nothing more."""
         
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": problem_description}
         ]
+        
+        # Log initial messages
+        log_to_file("initial_messages", {
+            "system_prompt": system_prompt,
+            "user_message": problem_description
+        })
         
         tool_call_log = []
         max_iterations = 10
@@ -282,16 +342,84 @@ class TerminalBenchAgent:
         
         try:
             for iteration in range(max_iterations):
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=self.tools,
-                    tool_choice="auto",
-                    max_tokens=2000,
-                    temperature=0.3
-                )
+                # Use max_completion_tokens for newer models like gpt-5, max_tokens for older models
+                api_params = {
+                    "model": self.model,
+                    "messages": messages,
+                    "tools": self.tools,
+                    "tool_choice": "auto"
+                }
+                # Check if model requires max_completion_tokens instead of max_tokens
+                if "gpt-5" in self.model.lower() or "o3" in self.model.lower():
+                    api_params["max_completion_tokens"] = 2000
+                    # gpt-5 only supports default temperature (1), don't set it
+                else:
+                    api_params["max_tokens"] = 2000
+                    api_params["temperature"] = 0.3
+                
+                # Log API request
+                log_to_file("api_request", {
+                    "iteration": iteration + 1,
+                    "request_params": {
+                        "model": api_params["model"],
+                        "tool_choice": api_params.get("tool_choice"),
+                        "max_completion_tokens": api_params.get("max_completion_tokens"),
+                        "max_tokens": api_params.get("max_tokens"),
+                        "temperature": api_params.get("temperature"),
+                        "num_messages": len(messages),
+                        "num_tools": len(self.tools)
+                    },
+                    "messages_preview": [
+                        {
+                            "role": msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None),
+                            "content_length": len(msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "") or ""),
+                            "content_preview": (msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", None) or "")[:200] or None,
+                            "tool_calls": len(msg.get("tool_calls", []) if isinstance(msg, dict) else getattr(msg, "tool_calls", None) or []),
+                            "tool_call_id": msg.get("tool_call_id") if isinstance(msg, dict) else getattr(msg, "tool_call_id", None)
+                        }
+                        for msg in messages[-5:]  # Last 5 messages for context
+                    ]
+                })
+                
+                response = self.client.chat.completions.create(**api_params)
                 
                 request_count += 1
+                
+                # Log full API response
+                response_data = {
+                    "id": response.id,
+                    "model": response.model,
+                    "created": response.created,
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens if response.usage else None,
+                        "completion_tokens": response.usage.completion_tokens if response.usage else None,
+                        "total_tokens": response.usage.total_tokens if response.usage else None
+                    },
+                    "choices": [
+                        {
+                            "index": choice.index,
+                            "message": {
+                                "role": choice.message.role,
+                                "content": choice.message.content,
+                                "tool_calls": [
+                                    {
+                                        "id": tc.id,
+                                        "type": tc.type,
+                                        "function": {
+                                            "name": tc.function.name,
+                                            "arguments": tc.function.arguments
+                                        }
+                                    }
+                                    for tc in (choice.message.tool_calls or [])
+                                ],
+                                "refusal": getattr(choice.message, "refusal", None)
+                            },
+                            "finish_reason": choice.finish_reason
+                        }
+                        for choice in response.choices
+                    ]
+                }
+                log_to_file("api_response", response_data)
                 
                 # Extract token usage from response
                 if hasattr(response, 'usage') and response.usage:
@@ -346,6 +474,14 @@ class TerminalBenchAgent:
                         else:
                             function_response = {"error": f"Unknown function: {function_name}"}
                         
+                        # Log tool execution
+                        log_to_file("tool_execution", {
+                            "tool_call_id": tool_call.id,
+                            "function_name": function_name,
+                            "function_args": function_args,
+                            "function_response": function_response
+                        })
+                        
                         # Print tool response to stderr
                         sys.stderr.write(f"   ✅ Tool Response:\n")
                         response_str = json.dumps(function_response, indent=2)
@@ -356,11 +492,17 @@ class TerminalBenchAgent:
                         sys.stderr.flush()
                         
                         # Add function response to messages
-                        messages.append({
+                        tool_message = {
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "name": function_name,
                             "content": json.dumps(function_response)
+                        }
+                        messages.append(tool_message)
+                        
+                        # Log tool message added to conversation
+                        log_to_file("tool_message_added", {
+                            "tool_message": tool_message
                         })
                 else:
                     # No more tool calls, return the final response
@@ -393,6 +535,15 @@ class TerminalBenchAgent:
                     sys.stderr.flush()
                     
                     self.logger.info(f"Token usage: {usage_info}")
+                    
+                    # Log conversation end
+                    log_to_file("conversation_end", {
+                        "final_response_preview": final_response[:500],
+                        "total_tool_calls": len(tool_call_log),
+                        "usage_info": usage_info,
+                        "total_iterations": iteration + 1
+                    })
+                    
                     return final_response, usage_info
             
             # Maximum iterations reached
@@ -402,10 +553,36 @@ class TerminalBenchAgent:
                 "completion_tokens": total_completion_tokens,
                 "request_count": request_count
             }
+            
+            # Log max iterations reached
+            log_to_file("max_iterations_reached", {
+                "total_iterations": max_iterations,
+                "usage_info": usage_info,
+                "total_tool_calls": len(tool_call_log)
+            })
+            
             return "Maximum iterations reached. Task may not be complete.", usage_info
             
         except Exception as e:
             self.logger.error(f"Error solving problem: {e}")
+            import traceback
+            
+            # Log error to file
+            try:
+                log_to_file("error", {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "traceback": traceback.format_exc(),
+                    "usage_info": {
+                        "total_tokens": total_tokens,
+                        "prompt_tokens": total_prompt_tokens,
+                        "completion_tokens": total_completion_tokens,
+                        "request_count": request_count
+                    }
+                })
+            except:
+                pass  # Don't fail if logging fails
+            
             usage_info = {
                 "total_tokens": total_tokens,
                 "prompt_tokens": total_prompt_tokens,
@@ -527,7 +704,7 @@ class TerminalBenchAgent:
 class Agent:
     """Simple agent wrapper for backward compatibility."""
     
-    def __init__(self, model="gpt-4o-mini", name="white_agent", description="A versatile agent capable of handling various tasks and problem-solving.", instruction="You are a helpful AI assistant. Respond to user queries clearly and concisely."):
+    def __init__(self, model="gpt-5", name="white_agent", description="A versatile agent capable of handling various tasks and problem-solving.", instruction="You are a helpful AI assistant. Respond to user queries clearly and concisely."):
         self.model = model
         self.name = name
         self.description = description
@@ -543,15 +720,23 @@ class Agent:
     def run(self, user_input):
         """Run the agent with user input and return response."""
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            # Use max_completion_tokens for newer models like gpt-5, max_tokens for older models
+            api_params = {
+                "model": self.model,
+                "messages": [
                     {"role": "system", "content": self.instruction},
                     {"role": "user", "content": user_input}
-                ],
-                max_tokens=1000,
-                temperature=0.7
-            )
+                ]
+            }
+            # Check if model requires max_completion_tokens instead of max_tokens
+            if "gpt-5" in self.model.lower() or "o3" in self.model.lower():
+                api_params["max_completion_tokens"] = 1000
+                # gpt-5 only supports default temperature (1), don't set it
+            else:
+                api_params["max_tokens"] = 1000
+                api_params["temperature"] = 0.7
+            
+            response = self.client.chat.completions.create(**api_params)
             return response.choices[0].message.content
         except Exception as e:
             return f"Error: {str(e)}"
@@ -793,7 +978,7 @@ class A2ATerminalBenchServer:
 
 # Create the agent instance for backward compatibility
 agent = Agent(
-    model="gpt-4o-mini",
+    model="gpt-5",
     name="white_agent",
     description="A versatile agent capable of handling various tasks and problem-solving.",
     instruction="You are a helpful AI assistant. Respond to user queries clearly and concisely."

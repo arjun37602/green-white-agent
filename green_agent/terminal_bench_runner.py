@@ -100,17 +100,38 @@ class GreenAgentTerminalBench:
     
     def _load_demo_tasks(self, task_ids: List[str] = None, limit: int = None) -> List[Dict[str, Any]]:
         """Load demo tasks for testing when Terminal-Bench dataset is not available."""
+        # Define known demo tasks with real instructions
+        known_demo_tasks = {
+            "hello-world": {
+                "id": "hello-world",
+                "description": "No description",
+                "instruction": 'Create a file called /app/hello.txt. Write "Hello, world!" to it.',
+                "environment": {
+                    "working_directory": "/app",
+                    "max_agent_timeout_sec": 900.0,
+                    "max_test_timeout_sec": 180.0,
+                    "run_tests_in_same_shell": False
+                },
+                "test": "Check if /app/hello.txt exists with exact content"
+            }
+        }
+        
         if task_ids:
-            # Create mock tasks for the specified IDs
+            # Create tasks for the specified IDs, using known tasks if available
             tasks = []
             for task_id in task_ids:
-                task = {
-                    "id": task_id,
-                    "description": f"Terminal Bench task: {task_id}",
-                    "instruction": f"Complete the task: {task_id}",
-                    "environment": {"working_directory": "/app"},
-                    "test": f"Test for {task_id}"
-                }
+                if task_id in known_demo_tasks:
+                    # Use the predefined task with real instructions
+                    task = known_demo_tasks[task_id]
+                else:
+                    # Create a placeholder task for unknown IDs
+                    task = {
+                        "id": task_id,
+                        "description": f"Terminal Bench task: {task_id}",
+                        "instruction": f"Complete the task: {task_id}",
+                        "environment": {"working_directory": "/app"},
+                        "test": f"Test for {task_id}"
+                    }
                 tasks.append(task)
             return tasks
         else:

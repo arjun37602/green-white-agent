@@ -69,7 +69,7 @@ def demo_real_terminalbench_tasks():
     print("from the official terminal-bench-core dataset.")
     
     # Check if Terminal-Bench dataset is available
-    dataset_path = "/Users/shoumik_roychowdhury/.cache/terminal-bench/terminal-bench-core/head"
+    dataset_path = "/Users/arjun/.cache/terminal-bench/terminal-bench-core/head"
     if not Path(dataset_path).exists():
         print(f"❌ Terminal-Bench dataset not found at: {dataset_path}")
         print("Please download it first with: tb datasets download terminal-bench-core")
@@ -78,7 +78,7 @@ def demo_real_terminalbench_tasks():
     print_step(1, "Initializing Green Agent with Terminal-Bench Dataset")
     with tempfile.TemporaryDirectory() as temp_dir:
         green_agent = GreenAgentTerminalBench(
-            white_agent_url="http://localhost:8002",
+            white_agent_url="http://localhost:8001",
             sandbox_base_path=temp_dir,
             terminal_bench_dataset_path=dataset_path
         )
@@ -190,7 +190,7 @@ def demo_task_loader():
     
     from green_agent.dataset_loaders.terminal_bench_loader import TerminalBenchTaskLoader
     
-    dataset_path = "/Users/shoumik_roychowdhury/.cache/terminal-bench/terminal-bench-core/head"
+    dataset_path = "/Users/arjun/.cache/terminal-bench/terminal-bench-core/head"
     if not Path(dataset_path).exists():
         print(f"❌ Terminal-Bench dataset not found at: {dataset_path}")
         return

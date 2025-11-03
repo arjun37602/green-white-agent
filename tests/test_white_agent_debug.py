@@ -15,7 +15,7 @@ def test_white_agent():
     print("=" * 60)
     
     # Initialize the agent
-    agent = TerminalBenchAgent(model="gpt-4o-mini")
+    agent = TerminalBenchAgent(model="gpt-5")
     
     # Test with a simple task
     task_description = "Create a file called hello.txt with content Hello World"
