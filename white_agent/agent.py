@@ -351,10 +351,10 @@ class TerminalBenchAgent:
                 }
                 # Check if model requires max_completion_tokens instead of max_tokens
                 if "gpt-5" in self.model.lower() or "o3" in self.model.lower():
-                    api_params["max_completion_tokens"] = 2000
+                    api_params["max_completion_tokens"] = 20000
                     # gpt-5 only supports default temperature (1), don't set it
                 else:
-                    api_params["max_tokens"] = 2000
+                    api_params["max_tokens"] = 20000
                     api_params["temperature"] = 0.3
                 
                 # Log API request

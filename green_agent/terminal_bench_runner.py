@@ -7,6 +7,7 @@ Enhanced with sandbox management and comprehensive evaluation.
 
 import json
 import logging
+import os
 import requests
 import sys
 import time
@@ -112,7 +113,10 @@ class GreenAgentTerminalBench:
                     "max_test_timeout_sec": 180.0,
                     "run_tests_in_same_shell": False
                 },
-                "test": "Check if /app/hello.txt exists with exact content"
+                "test": "Check if /app/hello.txt exists with exact content",
+                "metadata": {
+                    "test_file_path": os.path.expanduser("~/.cache/terminal-bench/terminal-bench-core/head/hello-world/tests/test_outputs.py")
+                }
             }
         }
         
@@ -260,6 +264,16 @@ class GreenAgentTerminalBench:
             self.logger.info(f"Executing {len(commands)} commands in sandbox {sandbox_id}")
             
             for i, command in enumerate(commands):
+                # Rewrite /app paths to ./app subdirectory
+                # Tests expect files at /app/*, so we create ./app/* and later symlink
+                original_command = command
+                import re
+                # Replace /app/ and /app at end of string or before whitespace
+                command = re.sub(r'/app/', './app/', command)
+                command = re.sub(r'/app(\s|$)', r'./app\1', command)
+                if command != original_command:
+                    self.logger.info(f"🔧 Rewrote path: {original_command} → {command}")
+                
                 self.logger.info(f"Command {i+1}/{len(commands)}: {command}")
                 
                 # Execute command in sandbox
@@ -347,6 +361,19 @@ class GreenAgentTerminalBench:
             match = re.match(line_pattern, line)
             if match:
                 commands.append(match.group(1).strip())
+        
+        # If no commands found yet, try parsing plain text before any separator like "===" 
+        if not commands:
+            # Look for commands before any "===" separator or other metadata
+            lines = text.split('\n')
+            for line in lines:
+                line = line.strip()
+                # Stop at separator lines or explanatory text
+                if line.startswith('===') or line.startswith('Tool:') or line.startswith('Args:'):
+                    break
+                # Look for lines that look like bash commands
+                if line and not line.startswith('#') and ('/' in line or '>' in line or any(cmd in line for cmd in ['mkdir', 'echo', 'printf', 'cat', 'touch', 'cd', 'ls', 'cp', 'mv', 'rm', 'chmod', 'chown'])):
+                    commands.append(line)
         
         # Filter out comments and empty commands
         commands = [cmd for cmd in commands if cmd and not cmd.startswith('#')]

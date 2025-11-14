@@ -437,6 +437,26 @@ class TaskEvaluator:
                 self.logger.warning(f"Failed to install pytest: {install_result.stderr}")
                 # Try to continue anyway - pytest might already be installed
             
+            # Create symlink so pytest tests can find /app/* files
+            # Tests expect /app/file.txt, but we created ./app/file.txt in sandbox
+            symlink_result = sandbox_manager.execute_command(
+                sandbox_id,
+                "mkdir -p /tmp/test_app && cp -r app/* /tmp/test_app/ 2>/dev/null || true"
+            )
+            
+            # Modify test file to use /tmp/test_app instead of /app
+            # This is a workaround since we can't create /app
+            sandbox_manager.execute_command(
+                sandbox_id,
+                f"sed -i.bak 's|/app|/tmp/test_app|g' {sandbox_test_path} 2>/dev/null || sed -i '' 's|/app|/tmp/test_app|g' {sandbox_test_path} 2>/dev/null || true"
+            )
+            
+            # Also copy files to /tmp/test_app
+            sandbox_manager.execute_command(
+                sandbox_id,
+                "cp -r ./app/* /tmp/test_app/ 2>/dev/null || true"
+            )
+            
             # Run pytest
             pytest_result = sandbox_manager.execute_command(
                 sandbox_id,
@@ -446,18 +466,25 @@ class TaskEvaluator:
             # Parse pytest output
             output = pytest_result.stdout + pytest_result.stderr
             
-            # Count tests
+            # Count tests using pytest's summary line (e.g., "2 passed in 0.5s" or "1 passed, 1 failed in 0.5s")
             import re
-            test_matches = re.findall(r"test_\w+", output)
-            tests_run = len(set(test_matches))
             
-            # Count passed tests
-            passed_matches = re.findall(r"PASSED", output)
-            tests_passed = len(passed_matches)
+            # Try to parse the summary line first
+            summary_match = re.search(r'(\d+)\s+passed', output)
+            tests_passed = int(summary_match.group(1)) if summary_match else 0
             
-            # Count failed tests
-            failed_matches = re.findall(r"FAILED", output)
-            tests_failed = len(failed_matches)
+            failed_match = re.search(r'(\d+)\s+failed', output)
+            tests_failed = int(failed_match.group(1)) if failed_match else 0
+            
+            tests_run = tests_passed + tests_failed
+            
+            # If no summary found, fall back to counting PASSED/FAILED markers
+            if tests_run == 0:
+                passed_matches = re.findall(r"PASSED", output)
+                tests_passed = len(passed_matches)
+                failed_matches = re.findall(r"FAILED", output)
+                tests_failed = len(failed_matches)
+                tests_run = tests_passed + tests_failed
             
             passed = pytest_result.success and tests_failed == 0
             
@@ -636,23 +663,49 @@ class TaskEvaluator:
     
     def _calculate_score(self, correctness: Dict[str, Any], performance: Dict[str, Any], 
                         safety: Dict[str, Any], efficiency: Dict[str, Any]) -> float:
-        """Calculate overall evaluation score."""
+        """
+        Calculate overall evaluation score.
+        
+        Scoring breakdown:
+        - Correctness: 80% (Partial credit based on checkpoint progress)
+        - Turns (API requests): 10% (Proportional - fewer = better)
+        - Token usage: 10% (Proportional - less = better)
+        """
         score = 0.0
         
-        # Correctness weight: 50%
-        if correctness["passed"]:
-            score += 0.5
+        # Maximum expected values (reasonable budgets for tasks)
+        MAX_REQUESTS = 10  # Most tasks should complete in ≤10 requests
+        MAX_TOKENS = 20000  # Reasonable token budget for complex tasks
         
-        # Performance weight: 20% (based on tokens per request)
-        performance_score = performance.get("performance_score", 0.0)
-        score += performance_score
+        # 1. CORRECTNESS: 80% (Partial credit for checkpoint progress)
+        # If we have unit test results, give partial credit based on tests passed
+        if "unit_tests" in correctness and correctness["unit_tests"].get("tests_run", 0) > 0:
+            tests_run = correctness["unit_tests"]["tests_run"]
+            tests_passed = correctness["unit_tests"]["tests_passed"]
+            # Proportional credit: (tests_passed / tests_run) * 0.80
+            correctness_score = (tests_passed / tests_run) * 0.80
+            score += correctness_score
+            self.logger.info(f"✅ Partial correctness: {tests_passed}/{tests_run} tests passed → {correctness_score:.2f}/0.80")
+        elif correctness["passed"]:
+            # Binary pass/fail if no unit tests
+            score += 0.80
         
-        # Safety weight: 20%
-        if safety["safe"]:
-            score += 0.2
+        # 2. TURNS (API Requests): 10% - Proportional scoring
+        # Formula: 0.10 * (1 - requests_used / max_requests)
+        # Examples: 1 request = 0.09, 2 = 0.08, 5 = 0.05, 10 = 0.00
+        total_requests = performance.get("total_requests")
+        if total_requests is not None:
+            requests_ratio = min(total_requests / MAX_REQUESTS, 1.0)
+            turns_score = 0.10 * (1.0 - requests_ratio)
+            score += turns_score
         
-        # Efficiency weight: 10%
-        if efficiency["efficient"]:
-            score += 0.1
+        # 3. TOKEN USAGE: 10% - Proportional scoring
+        # Formula: 0.10 * (1 - tokens_used / max_tokens)
+        # Examples: 1000 tokens = 0.095, 5000 = 0.075, 10000 = 0.05, 20000 = 0.00
+        total_tokens = performance.get("total_tokens")
+        if total_tokens is not None:
+            tokens_ratio = min(total_tokens / MAX_TOKENS, 1.0)
+            tokens_score = 0.10 * (1.0 - tokens_ratio)
+            score += tokens_score
         
         return min(score, 1.0)
