@@ -174,14 +174,16 @@ class SimpleWhiteAgent:
         instruction_lower = instruction.lower()
         
         # Parse "Create a file called X. Write Y to it." pattern
-        file_create_match = re.search(r"create a file called (.*?)\. write ['\"](.*?)['\"] to it", instruction_lower)
+        file_create_match = re.search(r"create a file called (.*?)\. write ['\"](.*?)['\"] to it", instruction_lower, re.IGNORECASE)
         if file_create_match:
-            filename = file_create_match.group(1).strip()
-            content = file_create_match.group(2).strip()
+            # Re-extract from original instruction to preserve case
+            original_match = re.search(r"create a file called (.*?)\. write ['\"](.*?)['\"] to it", instruction, re.IGNORECASE)
+            filename = original_match.group(1).strip()
+            content = original_match.group(2).strip()
             
-            # Handle /app/ prefix - use relative path instead
+            # Handle /app/ prefix - convert to relative app/ path
             if filename.startswith('/app/'):
-                filename = filename[5:]  # Remove /app/ prefix
+                filename = 'app/' + filename[5:]  # Convert /app/ to app/
             elif not filename.startswith('app/'):
                 filename = f"app/{filename}"
             
@@ -199,9 +201,9 @@ class SimpleWhiteAgent:
             content = write_match.group(1).strip()
             filename = write_match.group(2).strip()
             
-            # Handle /app/ prefix - use relative path instead
+            # Handle /app/ prefix - convert to relative app/ path
             if filename.startswith('/app/'):
-                filename = filename[5:]  # Remove /app/ prefix
+                filename = 'app/' + filename[5:]  # Convert /app/ to app/
             elif not filename.startswith('app/'):
                 filename = f"app/{filename}"
             
@@ -218,7 +220,7 @@ class SimpleWhiteAgent:
         if dir_match:
             dirname = dir_match.group(1).strip()
             if dirname.startswith('/app/'):
-                dirname = dirname[5:]  # Remove /app/ prefix
+                dirname = 'app/' + dirname[5:]  # Convert /app/ to app/
             elif not dirname.startswith('app/'):
                 dirname = f"app/{dirname}"
             
@@ -233,9 +235,15 @@ class SimpleWhiteAgent:
         # Parse SSL certificate patterns
         if "ssl" in instruction_lower or "certificate" in instruction_lower:
             commands = [
-                'mkdir -p ssl',
-                'openssl req -x509 -newkey rsa:4096 -keyout ssl/server.key -out ssl/server.crt -days 365 -nodes -subj "/C=US/ST=CA/L=SF/O=Test/CN=localhost"',
-                'ls -la ssl/'
+                'mkdir -p app/ssl',
+                'openssl genrsa -out app/ssl/server.key 2048',
+                'chmod 600 app/ssl/server.key',
+                'openssl req -new -x509 -key app/ssl/server.key -out app/ssl/server.crt -days 365 -subj "/O=DevOps Team/CN=dev-internal.company.local"',
+                'cat app/ssl/server.key app/ssl/server.crt > app/ssl/server.pem',
+                'openssl x509 -in app/ssl/server.crt -noout -subject > app/ssl/verification.txt',
+                'openssl x509 -in app/ssl/server.crt -noout -dates >> app/ssl/verification.txt',
+                'openssl x509 -in app/ssl/server.crt -noout -fingerprint -sha256 >> app/ssl/verification.txt',
+                'ls -la app/ssl/'
             ]
             self.logger.info("Parsed SSL certificate creation")
             return commands
@@ -594,31 +602,6 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    if args.server:
-        # Run as A2A server
-        print("🚀 Starting Simple White Agent Server...")
-        server = SimpleWhiteAgentServer(port=args.port, host=args.host)
-        server.run()
-    elif args.test:
-        # Test mode
-        print("🧪 Testing Simple White Agent...")
-        agent = SimpleWhiteAgent()
-        
-        # Test with sample tasks
-        test_tasks = [
-            "Create a file called solution.txt with the password",
-            "Create a directory called test_dir and navigate into it",
-            "Create a self-signed SSL certificate",
-            "Extract files from an archive"
-        ]
-        
-        for i, task in enumerate(test_tasks, 1):
-            print(f"\n📝 Test {i}: {task}")
-            commands = agent.solve_task(task)
-            print(f"✅ Generated {len(commands)} commands:")
-            for j, cmd in enumerate(commands, 1):
-                print(f"   {j}. {cmd}")
-        
-        print("\n🎉 Simple White Agent test completed!")
-    else:
-        print("Use --server to run as A2A server or --test to run tests")
+    print("🚀 Starting Simple White Agent Server...")
+    server = SimpleWhiteAgentServer(port=args.port, host=args.host)
+    server.run()

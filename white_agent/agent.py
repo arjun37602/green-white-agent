@@ -748,7 +748,7 @@ class A2ATerminalBenchServer:
     def __init__(self, port=8001, host="0.0.0.0"):
         self.port = port
         self.host = host
-        self.agent = TerminalBenchAgent(base_url=f"http://{host}:{port}")
+        self.agent = TerminalBenchAgent(model="gpt-4o", base_url=f"http://{host}:{port}")
         self.logger = logging.getLogger(__name__)
         self.app = FastAPI(
             title="Terminal Bench A2A Agent",
