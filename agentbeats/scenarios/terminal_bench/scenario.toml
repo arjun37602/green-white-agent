@@ -1,0 +1,45 @@
+[scenario]
+name = "terminal_bench"
+description = "Terminal Bench evaluation scenario with green agent orchestrator and white agent solver"
+version = "1.0.0"
+
+# Agents to be launched
+[[agents]]
+name = "Terminal Bench Green Agent"
+card = "agents/green_agent/agent_card.toml"
+launcher_host = "0.0.0.0"
+launcher_port = 6340
+agent_host = "0.0.0.0"
+agent_port = 8340
+model_type = "openai"
+model_name = "gpt-4o"
+tools = ["agents/green_agent/tools.py"]
+mcp_servers = []
+is_green = true
+
+[[agents]]
+name = "Terminal Bench White Agent"
+card = "agents/white_agent/agent_card.toml"
+launcher_host = "0.0.0.0"
+launcher_port = 6341
+agent_host = "0.0.0.0"
+agent_port = 8341
+model_type = "openai"
+model_name = "gpt-4o-mini"
+tools = []
+mcp_servers = []
+
+[[agents.participant_requirements]]
+  role = "white_agent"
+  name = "terminal_bench_solver"
+  required = true
+  participant_agent = "Terminal Bench White Agent"
+
+# Launch configuration
+[launch]
+mode = "tmux"
+tmux_session_name = "agentbeats-terminal-bench"
+startup_interval = 2
+wait_for_services = false
+
+

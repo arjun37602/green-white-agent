@@ -143,6 +143,13 @@ green-white-agent/
 │   ├── simple_agent.py          # Template-based test agent
 │   ├── a2a_protocol.py          # A2A protocol models
 │   └── requirements.txt
+├── agentbeats/               # AgentBeats Integration ⭐ NEW
+│   └── scenarios/
+│       └── terminal_bench/
+│           ├── agents/          # Green and white agent implementations
+│           ├── launcher_tau_bench.py
+│           ├── scenario.toml
+│           └── README.md
 ├── examples/                 # Example scripts and demos
 │   ├── demo_green_agent.py
 │   ├── demo_real_terminalbench.py
@@ -194,4 +201,20 @@ python examples/demo_terminalbench_system.py
 
 # Demo with real terminal bench tasks
 python examples/demo_real_terminalbench.py
+```
+
+## 🤝 AgentBeats Integration
+
+This repository includes full AgentBeats integration with three different patterns:
+
+1. **Tau-Bench Pattern**: Follows tau-bench example structure
+2. **Tutorial Pattern**: Follows AgentBeats tutorial pattern
+3. **Tools Pattern**: Original AgentBeats LLM-based approach
+
+See `agentbeats/scenarios/terminal_bench/README.md` for details.
+
+**Quick Start:**
+```bash
+# Run tau-bench pattern launcher
+python agentbeats/scenarios/terminal_bench/launcher_tau_bench.py
 ```

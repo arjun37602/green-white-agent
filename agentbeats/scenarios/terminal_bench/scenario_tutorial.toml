@@ -1,0 +1,16 @@
+[green_agent]
+endpoint = "http://127.0.0.1:8340"
+# Path relative to where the command is run from (usually tutorial/ or llm_runners/)
+cmd = "python ../agentbeats/scenarios/terminal_bench/agents/green_agent/green_agent_tutorial.py --host 127.0.0.1 --port 8340"
+
+[[participants]]
+role = "white_agent"
+endpoint = "http://127.0.0.1:8341"
+cmd = "python ../agentbeats/scenarios/terminal_bench/agents/white_agent/white_agent_server.py --host 127.0.0.1 --port 8341"
+
+[config]
+# Optional: specify task IDs to evaluate
+# task_ids = ["task1", "task2"]
+# Optional: limit number of tasks
+limit = 5
+
