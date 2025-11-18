@@ -39,7 +39,7 @@ load_dotenv()
 class TerminalBenchAgent:
     """A2A-compliant agent for handling terminal bench problems."""
     
-    def __init__(self, model="gpt-5", name="terminal_bench_agent", base_url="http://localhost:8001", log_dir=None):
+    def __init__(self, model="gpt-5-nano", name="terminal_bench_agent", base_url="http://localhost:8001", log_dir=None):
         self.model = model
         self.name = name
         self.base_url = base_url
@@ -342,7 +342,7 @@ class TerminalBenchAgent:
         
         try:
             for iteration in range(max_iterations):
-                # Use max_completion_tokens for newer models like gpt-5, max_tokens for older models
+                # Use max_completion_tokens for newer models like gpt-5-nano, max_tokens for older models
                 api_params = {
                     "model": self.model,
                     "messages": messages,
@@ -352,7 +352,7 @@ class TerminalBenchAgent:
                 # Check if model requires max_completion_tokens instead of max_tokens
                 if "gpt-5" in self.model.lower() or "o3" in self.model.lower():
                     api_params["max_completion_tokens"] = 20000
-                    # gpt-5 only supports default temperature (1), don't set it
+                    # gpt-5-nano only supports default temperature (1), don't set it
                 else:
                     api_params["max_tokens"] = 20000
                     api_params["temperature"] = 0.3
@@ -702,7 +702,7 @@ class TerminalBenchAgent:
 class Agent:
     """Simple agent wrapper for backward compatibility."""
     
-    def __init__(self, model="gpt-5", name="white_agent", description="A versatile agent capable of handling various tasks and problem-solving.", instruction="You are a helpful AI assistant. Respond to user queries clearly and concisely."):
+    def __init__(self, model="gpt-5-nano", name="white_agent", description="A versatile agent capable of handling various tasks and problem-solving.", instruction="You are a helpful AI assistant. Respond to user queries clearly and concisely."):
         self.model = model
         self.name = name
         self.description = description
@@ -718,7 +718,7 @@ class Agent:
     def run(self, user_input):
         """Run the agent with user input and return response."""
         try:
-            # Use max_completion_tokens for newer models like gpt-5, max_tokens for older models
+            # Use max_completion_tokens for newer models like gpt-5-nano, max_tokens for older models
             api_params = {
                 "model": self.model,
                 "messages": [
@@ -729,7 +729,6 @@ class Agent:
             # Check if model requires max_completion_tokens instead of max_tokens
             if "gpt-5" in self.model.lower() or "o3" in self.model.lower():
                 api_params["max_completion_tokens"] = 1000
-                # gpt-5 only supports default temperature (1), don't set it
             else:
                 api_params["max_tokens"] = 1000
                 api_params["temperature"] = 0.7
@@ -746,7 +745,7 @@ class A2ATerminalBenchServer:
     def __init__(self, port=8001, host="0.0.0.0"):
         self.port = port
         self.host = host
-        self.agent = TerminalBenchAgent(model="gpt-4o", base_url=f"http://{host}:{port}")
+        self.agent = TerminalBenchAgent(model="gpt-5-nano", base_url=f"http://{host}:{port}")
         self.logger = logging.getLogger(__name__)
         self.app = FastAPI(
             title="Terminal Bench A2A Agent",
@@ -976,7 +975,7 @@ class A2ATerminalBenchServer:
 
 # Create the agent instance for backward compatibility
 agent = Agent(
-    model="gpt-5",
+    model="gpt-5-nano",
     name="white_agent",
     description="A versatile agent capable of handling various tasks and problem-solving.",
     instruction="You are a helpful AI assistant. Respond to user queries clearly and concisely."
