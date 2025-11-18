@@ -1,0 +1,168 @@
+{
+  "name": "Terminal Bench A2A Test Suite",
+  "description": "A2A-compatible test suite converted from Terminal Bench dataset",
+  "version": "1.0.0",
+  "tasks": [
+    {
+      "id": "find_large_files",
+      "task": {
+        "artifacts": [
+          {
+            "parts": [
+              {
+                "type": "text",
+                "text": "Terminal Bench Problem:\n\nINSTRUCTION:\nWrite a bash script to find all files larger than 100MB in the current directory and subdirectories\n\nENVIRONMENT:\n{\n  \"os\": \"linux\",\n  \"shell\": \"bash\"\n}\n\nTEST:\nThe script should output file paths and their sizes in human-readable format\n\nPlease provide a step-by-step solution for this terminal problem."
+              }
+            ]
+          }
+        ],
+        "metadata": {
+          "problem_id": "find_large_files",
+          "difficulty": "easy",
+          "category": "file_operations",
+          "tags": [
+            "bash",
+            "find",
+            "filesize"
+          ]
+        }
+      },
+      "expected_fields": [
+        "instruction",
+        "environment",
+        "test"
+      ],
+      "metadata": {
+        "difficulty": "easy",
+        "category": "file_operations",
+        "tags": [
+          "bash",
+          "find",
+          "filesize"
+        ]
+      }
+    },
+    {
+      "id": "nginx_setup",
+      "task": {
+        "artifacts": [
+          {
+            "parts": [
+              {
+                "type": "text",
+                "text": "Terminal Bench Problem:\n\nINSTRUCTION:\nSet up a basic nginx web server configuration for a simple HTML site\n\nENVIRONMENT:\n{\n  \"os\": \"linux\",\n  \"service\": \"nginx\"\n}\n\nTEST:\nThe configuration should serve static HTML files from /var/www/html\n\nPlease provide a step-by-step solution for this terminal problem."
+              }
+            ]
+          }
+        ],
+        "metadata": {
+          "problem_id": "nginx_setup",
+          "difficulty": "medium",
+          "category": "web_server",
+          "tags": [
+            "nginx",
+            "web",
+            "configuration"
+          ]
+        }
+      },
+      "expected_fields": [
+        "instruction",
+        "environment",
+        "test"
+      ],
+      "metadata": {
+        "difficulty": "medium",
+        "category": "web_server",
+        "tags": [
+          "nginx",
+          "web",
+          "configuration"
+        ]
+      }
+    },
+    {
+      "id": "python_debug",
+      "task": {
+        "artifacts": [
+          {
+            "parts": [
+              {
+                "type": "text",
+                "text": "Terminal Bench Problem:\n\nINSTRUCTION:\nDebug this Python script that's failing with a syntax error:\n\n```python\ndef calculate_average(numbers):\n    total = sum(numbers)\n    count = len(numbers)\n    return total / count\n\n# Test the function\nnumbers = [1, 2, 3, 4, 5]\nresult = calculate_average(numbers)\nprint(f'The average is: {result}'\n```\n\nENVIRONMENT:\n{\n  \"os\": \"linux\",\n  \"language\": \"python3\"\n}\n\nTEST:\nThe script should run without errors and output the correct average\n\nPlease provide a step-by-step solution for this terminal problem."
+              }
+            ]
+          }
+        ],
+        "metadata": {
+          "problem_id": "python_debug",
+          "difficulty": "easy",
+          "category": "debugging",
+          "tags": [
+            "python",
+            "syntax",
+            "debugging"
+          ]
+        }
+      },
+      "expected_fields": [
+        "instruction",
+        "environment",
+        "test"
+      ],
+      "metadata": {
+        "difficulty": "easy",
+        "category": "debugging",
+        "tags": [
+          "python",
+          "syntax",
+          "debugging"
+        ]
+      }
+    },
+    {
+      "id": "disk_usage",
+      "task": {
+        "artifacts": [
+          {
+            "parts": [
+              {
+                "type": "text",
+                "text": "Terminal Bench Problem:\n\nINSTRUCTION:\nCreate a bash script that monitors disk usage and alerts when usage exceeds 80%\n\nENVIRONMENT:\n{\n  \"os\": \"linux\",\n  \"shell\": \"bash\"\n}\n\nTEST:\nThe script should check disk usage and send an alert if any partition exceeds 80%\n\nPlease provide a step-by-step solution for this terminal problem."
+              }
+            ]
+          }
+        ],
+        "metadata": {
+          "problem_id": "disk_usage",
+          "difficulty": "medium",
+          "category": "system_monitoring",
+          "tags": [
+            "bash",
+            "disk",
+            "monitoring"
+          ]
+        }
+      },
+      "expected_fields": [
+        "instruction",
+        "environment",
+        "test"
+      ],
+      "metadata": {
+        "difficulty": "medium",
+        "category": "system_monitoring",
+        "tags": [
+          "bash",
+          "disk",
+          "monitoring"
+        ]
+      }
+    }
+  ],
+  "metadata": {
+    "source_dataset": "sample_terminal_bench.json",
+    "total_tasks": 4,
+    "conversion_date": "2024-01-01"
+  }
+}

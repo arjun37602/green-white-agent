@@ -1,0 +1,50 @@
+[
+  {
+    "id": "find_large_files",
+    "instruction": "Write a bash script to find all files larger than 100MB in the current directory and subdirectories",
+    "environment": {
+      "os": "linux",
+      "shell": "bash"
+    },
+    "test": "The script should output file paths and their sizes in human-readable format",
+    "difficulty": "easy",
+    "category": "file_operations",
+    "tags": ["bash", "find", "filesize"]
+  },
+  {
+    "id": "nginx_setup",
+    "instruction": "Set up a basic nginx web server configuration for a simple HTML site",
+    "environment": {
+      "os": "linux",
+      "service": "nginx"
+    },
+    "test": "The configuration should serve static HTML files from /var/www/html",
+    "difficulty": "medium",
+    "category": "web_server",
+    "tags": ["nginx", "web", "configuration"]
+  },
+  {
+    "id": "python_debug",
+    "instruction": "Debug this Python script that's failing with a syntax error:\n\n```python\ndef calculate_average(numbers):\n    total = sum(numbers)\n    count = len(numbers)\n    return total / count\n\n# Test the function\nnumbers = [1, 2, 3, 4, 5]\nresult = calculate_average(numbers)\nprint(f'The average is: {result}'\n```",
+    "environment": {
+      "os": "linux",
+      "language": "python3"
+    },
+    "test": "The script should run without errors and output the correct average",
+    "difficulty": "easy",
+    "category": "debugging",
+    "tags": ["python", "syntax", "debugging"]
+  },
+  {
+    "id": "disk_usage",
+    "instruction": "Create a bash script that monitors disk usage and alerts when usage exceeds 80%",
+    "environment": {
+      "os": "linux",
+      "shell": "bash"
+    },
+    "test": "The script should check disk usage and send an alert if any partition exceeds 80%",
+    "difficulty": "medium",
+    "category": "system_monitoring",
+    "tags": ["bash", "disk", "monitoring"]
+  }
+]
