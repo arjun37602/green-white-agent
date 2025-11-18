@@ -67,7 +67,7 @@ class GreenAgentTerminalBench:
     
     def load_terminal_bench_tasks(self, task_ids: List[str] = None, limit: int = None) -> List[Dict[str, Any]]:
         """
-        Load Terminal Bench tasks from Terminal-Bench dataset or fallback to demo tasks.
+        Load Terminal Bench tasks from Terminal-Bench dataset ONLY.
         
         Args:
             task_ids: Specific task IDs to load (None = load all)
@@ -75,91 +75,28 @@ class GreenAgentTerminalBench:
             
         Returns:
             List of task dictionaries
-        """
-        try:
-            if self.tb_loader:
-                # Load from Terminal-Bench dataset
-                self.logger.info("Loading tasks from Terminal-Bench dataset")
-                tb_tasks = self.tb_loader.load_tasks_from_dataset(task_ids, limit)
-                
-                # Convert to internal format
-                tasks = []
-                for tb_task in tb_tasks:
-                    task_dict = self.tb_loader.convert_to_internal_format(tb_task)
-                    tasks.append(task_dict)
-                
-                self.logger.info(f"Loaded {len(tasks)} tasks from Terminal-Bench dataset")
-                return tasks
-            else:
-                # Fall back to demo tasks
-                self.logger.info("Terminal-Bench dataset not available, using demo tasks")
-                return self._load_demo_tasks(task_ids, limit)
-                    
-        except Exception as e:
-            self.logger.error(f"Error loading Terminal Bench tasks: {e}")
-            return self._load_demo_tasks(task_ids, limit)
-    
-    def _load_demo_tasks(self, task_ids: List[str] = None, limit: int = None) -> List[Dict[str, Any]]:
-        """Load demo tasks for testing when Terminal-Bench dataset is not available."""
-        # Define known demo tasks with real instructions
-        known_demo_tasks = {
-            "hello-world": {
-                "id": "hello-world",
-                "description": "No description",
-                "instruction": 'Create a file called /app/hello.txt. Write "Hello, world!" to it.',
-                "environment": {
-                    "working_directory": "/app",
-                    "max_agent_timeout_sec": 900.0,
-                    "max_test_timeout_sec": 180.0,
-                    "run_tests_in_same_shell": False
-                },
-                "test": "Check if /app/hello.txt exists with exact content",
-                "metadata": {
-                    "test_file_path": os.path.expanduser("~/.cache/terminal-bench/terminal-bench-core/head/hello-world/tests/test_outputs.py")
-                }
-            }
-        }
-        
-        if task_ids:
-            # Create tasks for the specified IDs, using known tasks if available
-            tasks = []
-            for task_id in task_ids:
-                if task_id in known_demo_tasks:
-                    # Use the predefined task with real instructions
-                    task = known_demo_tasks[task_id]
-                else:
-                    # Create a placeholder task for unknown IDs
-                    task = {
-                        "id": task_id,
-                        "description": f"Terminal Bench task: {task_id}",
-                        "instruction": f"Complete the task: {task_id}",
-                        "environment": {"working_directory": "/app"},
-                        "test": f"Test for {task_id}"
-                    }
-                tasks.append(task)
-            return tasks
-        else:
-            # Return some example tasks for testing
-            example_tasks = [
-                {
-                    "id": "crack-7z-hash",
-                    "description": "Crack a 7z archive password",
-                    "instruction": "You need to create a file called 'solution.txt' with the word found in the 'secrets.7z' archive. The final 'solution.txt' should be located at '/app/solution.txt'.",
-                    "environment": {"working_directory": "/app"},
-                    "test": "Check if solution.txt exists and contains the correct password"
-                },
-                {
-                    "id": "openssl-selfsigned-cert",
-                    "description": "Create a self-signed TLS certificate",
-                    "instruction": "Your company needs a self-signed TLS certificate for an internal development server. Create a self-signed certificate using OpenSSL with the specified requirements.",
-                    "environment": {"working_directory": "/app"},
-                    "test": "Verify certificate files exist and are properly formatted"
-                }
-            ]
             
-            if limit:
-                return example_tasks[:limit]
-            return example_tasks
+        Raises:
+            RuntimeError: If Terminal-Bench dataset is not available
+        """
+        if not self.tb_loader:
+            raise RuntimeError(
+                "Terminal-Bench dataset loader not initialized. "
+                "Please provide a valid terminal_bench_dataset_path when creating the GreenAgent."
+            )
+        
+        # Load from Terminal-Bench dataset
+        self.logger.info("Loading tasks from Terminal-Bench dataset")
+        tb_tasks = self.tb_loader.load_tasks_from_dataset(task_ids, limit)
+        
+        # Convert to internal format
+        tasks = []
+        for tb_task in tb_tasks:
+            task_dict = self.tb_loader.convert_to_internal_format(tb_task)
+            tasks.append(task_dict)
+        
+        self.logger.info(f"Loaded {len(tasks)} tasks from Terminal-Bench dataset")
+        return tasks
     
     def execute_task_with_sandbox(self, task: Dict[str, Any]) -> TaskExecutionResult:
         """
@@ -443,76 +380,17 @@ Complete this task and verify it passes the tests.
             self.logger.error(f"Error sending task to white agent: {e}")
             return {"error": str(e)}
     
-    def evaluate_task(self, task_id: str) -> Dict[str, Any]:
-        """Evaluate a completed task using terminal-bench."""
-        try:
-            self.logger.info(f"🔍 Evaluating task: {task_id}")
-            
-            # Run the actual terminal-bench evaluation
-            # Note: This requires the white agent to be integrated as a custom agent
-            #TODO: White agent should return the solution file or expected output
-            # For now, we'll use a simple test to verify the task was completed
-            
-            # Check if the task has a solution file or expected output
-            if task_id == "crack-7z-hash":
-                # Check if solution.txt exists and contains expected content
-                cmd = "test -f /app/solution.txt && echo 'File exists' || echo 'File missing'"
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
-                
-                evaluation_result = {
-                    "task_id": task_id,
-                    "passed": result.returncode == 0 and "File exists" in result.stdout,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "test_command": cmd
-                }
-                
-            elif task_id == "openssl-selfsigned-cert":
-                # Check if certificate files exist
-                cmd = "test -f /app/ssl/server.crt && test -f /app/ssl/server.key && echo 'Certificate files exist' || echo 'Certificate files missing'"
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
-                
-                evaluation_result = {
-                    "task_id": task_id,
-                    "passed": result.returncode == 0 and "Certificate files exist" in result.stdout,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "test_command": cmd
-                }
-                
-            else:
-                # Generic evaluation - check if any output was produced
-                cmd = f"ls -la /app/ | grep -v '^total' | wc -l"
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
-                
-                evaluation_result = {
-                    "task_id": task_id,
-                    "passed": result.returncode == 0,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "test_command": cmd
-                }
-            
-            self.logger.info(f"📊 Evaluation result for {task_id}: {'✅ PASSED' if evaluation_result['passed'] else '❌ FAILED'}")
-            
-            return evaluation_result
-            
-        except Exception as e:
-            self.logger.error(f"Error evaluating task {task_id}: {e}")
-            return {"task_id": task_id, "passed": False, "error": str(e)}
-    
-    def run_evaluation(self, task_ids: List[str] = None, limit: int = 5, use_sandbox: bool = True):
+    def run_evaluation(self, task_ids: List[str] = None, limit: int = 5):
         """
-        Run full evaluation loop with enhanced sandbox support.
+        Run full evaluation loop with sandbox-based execution and Terminal-Bench pytest evaluation.
         
         Args:
             task_ids: Specific task IDs to run
             limit: Maximum number of tasks
-            use_sandbox: Whether to use sandbox isolation
         """
         self.logger.info("🚀 Starting Terminal Bench evaluation")
         
-        # Load tasks
+        # Load tasks from Terminal-Bench dataset
         tasks = self.load_terminal_bench_tasks(task_ids, limit)
         self.logger.info(f"📋 Loaded {len(tasks)} tasks")
         
@@ -524,37 +402,20 @@ Complete this task and verify it passes the tests.
             self.logger.info(f"📝 Task {i}/{len(tasks)}: {task_id}")
             self.logger.info(f"{'='*60}")
             
-            if use_sandbox:
-                # Use enhanced sandbox-based execution
-                execution_result = self.execute_task_with_sandbox(task)
-                
-                result = {
-                    "task_id": task_id,
-                    "success": execution_result.success,
-                    "execution_time": execution_result.execution_time,
-                    "commands_executed": execution_result.commands_executed,
-                    "evaluation_score": execution_result.evaluation_result.score if execution_result.evaluation_result else 0.0,
-                    "sandbox_id": execution_result.sandbox_id,
-                    "white_agent_response": execution_result.white_agent_response,
-                    "evaluation_details": execution_result.evaluation_result.details if execution_result.evaluation_result else {},
-                    "timestamp": execution_result.timestamp
-                }
-            else:
-                # Use legacy evaluation method
-                agent_response = self.send_task_to_white_agent(task)
-                evaluation = self.evaluate_task(task_id)
-                
-                result = {
-                    "task_id": task_id,
-                    "success": evaluation.get("passed", False),
-                    "execution_time": 0.0,
-                    "commands_executed": 0,
-                    "evaluation_score": 1.0 if evaluation.get("passed", False) else 0.0,
-                    "sandbox_id": None,
-                    "white_agent_response": agent_response,
-                    "evaluation_details": evaluation,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
+            # Execute task with sandbox isolation and Terminal-Bench pytest evaluation
+            execution_result = self.execute_task_with_sandbox(task)
+            
+            result = {
+                "task_id": task_id,
+                "success": execution_result.success,
+                "execution_time": execution_result.execution_time,
+                "commands_executed": execution_result.commands_executed,
+                "evaluation_score": execution_result.evaluation_result.score if execution_result.evaluation_result else 0.0,
+                "sandbox_id": execution_result.sandbox_id,
+                "white_agent_response": execution_result.white_agent_response,
+                "evaluation_details": execution_result.evaluation_result.details if execution_result.evaluation_result else {},
+                "timestamp": execution_result.timestamp
+            }
             
             results.append(result)
             
@@ -578,10 +439,7 @@ Complete this task and verify it passes the tests.
         self.logger.info(f"Average Score: {avg_score:.2f}")
         self.logger.info(f"Total Execution Time: {total_time:.2f}s")
         self.logger.info(f"Total Commands Executed: {total_commands}")
-        
-        if use_sandbox:
-            self.logger.info(f"Sandbox Mode: Enabled")
-            self.logger.info(f"Active Sandboxes: {len(self.sandbox_manager.list_sandboxes())}")
+        self.logger.info(f"Sandbox Mode: Always Enabled")
         
         return results
     

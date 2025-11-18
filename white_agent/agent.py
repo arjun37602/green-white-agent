@@ -506,7 +506,10 @@ class TerminalBenchAgent:
                         })
                 else:
                     # No more tool calls, return the final response
-                    final_response = assistant_message.content or "Task completed"
+                    if not assistant_message.content:
+                        raise ValueError("LLM returned empty response - no content or tool calls")
+                    
+                    final_response = assistant_message.content
                     
                     sys.stderr.write(f"\n✅ Final Response:\n")
                     sys.stderr.write(f"   {final_response[:500]}{'...' if len(final_response) > 500 else ''}\n")
@@ -561,7 +564,7 @@ class TerminalBenchAgent:
                 "total_tool_calls": len(tool_call_log)
             })
             
-            return "Maximum iterations reached. Task may not be complete.", usage_info
+            raise RuntimeError(f"Maximum iterations ({max_iterations}) reached without completing task")
             
         except Exception as e:
             self.logger.error(f"Error solving problem: {e}")
@@ -583,13 +586,8 @@ class TerminalBenchAgent:
             except:
                 pass  # Don't fail if logging fails
             
-            usage_info = {
-                "total_tokens": total_tokens,
-                "prompt_tokens": total_prompt_tokens,
-                "completion_tokens": total_completion_tokens,
-                "request_count": request_count
-            }
-            return f"Error: {str(e)}", usage_info
+            # Re-raise the exception instead of returning error string as commands
+            raise
     
     def handle_message(self, message: Message) -> Task:
         """
@@ -1000,37 +998,3 @@ if __name__ == "__main__":
         print("🚀 Starting A2A Terminal Bench Agent Server...")
         server = A2ATerminalBenchServer(port=args.port, host=args.host)
         server.run()
-    elif args.test:
-        # Test mode
-        print("🧪 Testing Terminal Bench Agent...")
-        print(f"Agent '{agent.name}' initialized with model '{agent.model}'")
-        
-        # Test the A2A agent
-        test_agent = TerminalBenchAgent()
-        print(f"A2A-compatible agent: {test_agent.name}")
-        print(f"Skills: {[skill.name for skill in test_agent.skills]}")
-        
-        # Test a simple problem
-        sample_problem = "Write a bash script to find all files larger than 100MB in the current directory"
-        print(f"\nTesting with sample problem: {sample_problem}")
-        # Note: Uncomment the next line to test with OpenAI (requires API key)
-        # print(f"Response: {test_agent.solve_problem(sample_problem)}")
-        
-        # Test A2A message handling
-        print("\n🔧 Testing A2A message handling...")
-        test_message = create_text_message(
-            text=sample_problem,
-            role="user"
-        )
-        
-        try:
-            task = test_agent.handle_message(test_message)
-            print(f"✅ A2A message handling successful")
-            print(f"Task ID: {task.id}")
-            print(f"Status: {task.status.state}")
-            print(f"Context ID: {task.contextId}")
-            print(f"Artifacts: {len(task.artifacts)}")
-            if task.artifacts:
-                print(f"Response length: {len(task.artifacts[0].parts[0].text)} characters")
-        except Exception as e:
-            print(f"❌ A2A message handling failed: {e}")
