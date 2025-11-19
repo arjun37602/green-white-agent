@@ -20,6 +20,7 @@ from datetime import datetime
 from .sandbox_manager import SandboxManager, CommandResult, SandboxState
 from .task_evaluator import TaskEvaluator, EvaluationResult
 from .dataset_loaders.terminal_bench_loader import TerminalBenchTaskLoader, TerminalBenchTask
+from .attempt_store import AttemptStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,13 +44,19 @@ class GreenAgentTerminalBench:
     
     def __init__(self, white_agent_url: str = "http://localhost:8002", 
                  sandbox_base_path: Optional[str] = None,
-                 terminal_bench_dataset_path: Optional[str] = None):
+                 terminal_bench_dataset_path: Optional[str] = None,
+                 attempt_store_path: Optional[str] = None,
+                 model_id: str = "default_model"):
         self.white_agent_url = white_agent_url
+        self.model_id = model_id
         self.logger = logging.getLogger(__name__)
+        
+        # Initialize attempt store
+        self.attempt_store = AttemptStore(store_path=attempt_store_path or "./evaluation_results")
         
         # Initialize sandbox manager and task evaluator
         self.sandbox_manager = SandboxManager(base_path=sandbox_base_path)
-        self.task_evaluator = TaskEvaluator()
+        self.task_evaluator = TaskEvaluator(attempt_store=self.attempt_store)
         
         # Initialize Terminal-Bench loader if dataset path provided
         self.tb_loader = None
@@ -111,7 +118,13 @@ class GreenAgentTerminalBench:
         task_id = task.get('id', 'unknown')
         start_time = time.time()
         
-        self.logger.info(f"🚀 Starting task execution: {task_id}")
+        # Add model_id to task spec for recording
+        if 'metadata' not in task:
+            task['metadata'] = {}
+        task['metadata']['model_id'] = self.model_id
+        task['metadata']['attempt_id'] = task.get('attempt_id', 0)
+        
+        self.logger.info(f"🚀 Starting task execution: {task_id} (model: {self.model_id})")
         
         try:
             # Step 1: Create sandbox environment

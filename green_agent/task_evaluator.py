@@ -14,6 +14,7 @@ from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from datetime import datetime
 from .sandbox_manager import CommandResult, SandboxState
+from .attempt_store import AttemptStore, Attempt
 
 
 @dataclass
@@ -46,8 +47,9 @@ class EvaluationResult:
 class TaskEvaluator:
     """Evaluates task completion against success criteria"""
     
-    def __init__(self):
+    def __init__(self, attempt_store: Optional[AttemptStore] = None):
         self.logger = logging.getLogger(__name__)
+        self.attempt_store = attempt_store
     
     def evaluate(self, task_id: str, task_spec: Dict[str, Any], 
                  command_history: List[CommandResult], sandbox_state: SandboxState, 
@@ -106,6 +108,10 @@ class TaskEvaluator:
         
         # Determine if task passed
         passed = overall_score >= 0.7 and correctness_result["passed"]
+        
+        # Save attempt if store available
+        if self.attempt_store:
+            self._save_attempt(task_id, task_spec, correctness_result, performance_result)
         
         return EvaluationResult(
             task_id=task_id,
@@ -709,3 +715,46 @@ class TaskEvaluator:
             score += tokens_score
         
         return min(score, 1.0)
+    
+    def _save_attempt(
+        self,
+        task_id: str,
+        task_spec: Dict[str, Any],
+        correctness_result: Dict[str, Any],
+        performance_result: Dict[str, Any]
+    ) -> None:
+        """Save attempt to store"""
+        try:
+            # Extract model ID
+            model_id = task_spec.get("model_id", "default_model")
+            if "metadata" in task_spec and "model_id" in task_spec["metadata"]:
+                model_id = task_spec["metadata"]["model_id"]
+            
+            # Extract attempt ID
+            attempt_id = task_spec.get("attempt_id", 0)
+            if "metadata" in task_spec and "attempt_id" in task_spec["metadata"]:
+                attempt_id = task_spec["metadata"]["attempt_id"]
+            
+            # Calculate accuracy
+            if "unit_tests" in correctness_result and correctness_result["unit_tests"].get("tests_run", 0) > 0:
+                tests_run = correctness_result["unit_tests"]["tests_run"]
+                tests_passed = correctness_result["unit_tests"]["tests_passed"]
+                accuracy = tests_passed / tests_run if tests_run > 0 else 0.0
+            else:
+                accuracy = 1.0 if correctness_result["passed"] else 0.0
+            
+            # Create attempt
+            attempt = Attempt(
+                attempt_id=attempt_id,
+                accuracy=accuracy,
+                num_tokens=performance_result.get("total_tokens") or 0,
+                num_turns=performance_result.get("total_requests") or 1,
+                timestamp=datetime.utcnow().isoformat(),
+                metadata={"correctness": correctness_result, "performance": performance_result}
+            )
+            
+            self.attempt_store.save_attempt(model_id, task_id, attempt)
+            self.logger.info(f"Saved attempt for {model_id} on {task_id}")
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to save attempt: {e}")
