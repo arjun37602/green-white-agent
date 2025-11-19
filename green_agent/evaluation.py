@@ -4,9 +4,10 @@ Handlers define how to compare models (get_label), train (loss), and report (lea
 """
 
 import random
-import numpy as np
-from typing import Dict, List, Tuple, Callable, Any
-from collections import defaultdict
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
 
 from .attempt_store import Attempt
@@ -36,17 +37,29 @@ class Handler:
         """Return label: 'a_wins', 'b_wins', 'tie', or 'both'"""
         raise NotImplementedError
     
-    def loss_function(self, elo_a: float, elo_b: float, label: str) -> float:
-        """Compute loss for this battle"""
-        raise NotImplementedError
-    
-    def train(self, learning_rate: float = 0.01, num_iterations: int = 100) -> None:
+    def train(self, **kwargs) -> None:
         """Train model parameters (e.g., elos) from battles"""
         raise NotImplementedError
     
     def get_leaderboard(self) -> List[Dict[str, Any]]:
         """Return sorted leaderboard with metrics"""
         raise NotImplementedError
+
+
+class BradleyTerryModel(nn.Module):
+    """PyTorch model for Bradley-Terry ratings"""
+    
+    def __init__(self, num_models: int, init_mean: float = 1500.0, init_std: float = 50.0):
+        super().__init__()
+        self.elos = nn.Parameter(torch.randn(num_models) * init_std + init_mean)
+    
+    def forward(self, idx_a: torch.Tensor, idx_b: torch.Tensor) -> torch.Tensor:
+        """Compute P(A wins over B) using Bradley-Terry model"""
+        elo_a = self.elos[idx_a]
+        elo_b = self.elos[idx_b]
+        elo_diff = (elo_b - elo_a) / 400.0
+        p_a_wins = torch.sigmoid(-elo_diff * torch.log(torch.tensor(10.0)))
+        return p_a_wins
 
 
 class BTHandler(Handler):
@@ -72,67 +85,64 @@ class BTHandler(Handler):
         elif turns_b < turns_a:
             return "b_wins"
         
-        # Still tied - return both
         return "both"
     
-    def loss_function(self, elo_a: float, elo_b: float, label: str) -> float:
-        """Bradley-Terry loss"""
-        # Predicted probability a wins
-        p_a_wins = 1.0 / (1.0 + 10 ** ((elo_b - elo_a) / 400))
-        
-        # True outcome
-        if label == "a_wins":
-            y_true = 1.0
-        elif label == "b_wins":
-            y_true = 0.0
-        elif label == "tie":
-            y_true = 0.5
-        else:  # both
-            y_true = 0.5
-        
-        # Cross-entropy loss
-        eps = 1e-10
-        return -(y_true * np.log(p_a_wins + eps) + (1 - y_true) * np.log(1 - p_a_wins + eps))
-    
-    def train(self, learning_rate: float = 32.0, num_iterations: int = 100) -> None:
-        """Train elos using gradient descent"""
-        # Initialize elos to 1500
+    def train(self, learning_rate: float = 0.1, num_epochs: int = 1000, 
+              init_mean: float = 1500.0, init_std: float = 50.0) -> None:
+        """Train elos using PyTorch"""
+        # Get unique models
         models = set()
         for battle in self.battles:
             models.add(battle.model_a)
             models.add(battle.model_b)
         
-        self.elos = {model: 1500.0 for model in models}
+        model_list = sorted(list(models))
+        model_to_idx = {model: i for i, model in enumerate(model_list)}
         
-        # Gradient descent
-        for iteration in range(num_iterations):
-            gradients = {model: 0.0 for model in models}
+        # Create BT model
+        torch.manual_seed(42)
+        bt_model = BradleyTerryModel(len(model_list), init_mean, init_std)
+        optimizer = optim.Adam(bt_model.parameters(), lr=learning_rate)
+        
+        # Prepare battle tensors
+        indices_a = []
+        indices_b = []
+        labels = []
+        
+        for battle in self.battles:
+            indices_a.append(model_to_idx[battle.model_a])
+            indices_b.append(model_to_idx[battle.model_b])
             
-            for battle in self.battles:
-                elo_a = self.elos[battle.model_a]
-                elo_b = self.elos[battle.model_b]
-                
-                # Predicted
-                p_a_wins = 1.0 / (1.0 + 10 ** ((elo_b - elo_a) / 400))
-                
-                # True
-                if battle.label == "a_wins":
-                    y_true = 1.0
-                elif battle.label == "b_wins":
-                    y_true = 0.0
-                else:  # tie or both
-                    y_true = 0.5
-                
-                # Gradient
-                error = p_a_wins - y_true
-                grad = error * (np.log(10) / 400) * p_a_wins * (1 - p_a_wins)
-                
-                gradients[battle.model_a] += grad
-                gradients[battle.model_b] -= grad
+            if battle.label == "a_wins":
+                labels.append(1.0)
+            elif battle.label == "b_wins":
+                labels.append(0.0)
+            else:
+                labels.append(0.5)
+        
+        idx_a_tensor = torch.tensor(indices_a)
+        idx_b_tensor = torch.tensor(indices_b)
+        y_true_tensor = torch.tensor(labels)
+        
+        # Training loop
+        for epoch in range(num_epochs):
+            optimizer.zero_grad()
             
-            # Update
-            for model in models:
-                self.elos[model] -= learning_rate * gradients[model]
+            # Forward pass
+            p_a_wins = bt_model(idx_a_tensor, idx_b_tensor)
+            
+            # Binary cross-entropy loss
+            loss = -(y_true_tensor * torch.log(p_a_wins + 1e-10) + 
+                    (1 - y_true_tensor) * torch.log(1 - p_a_wins + 1e-10)).mean()
+            
+            # Backward pass
+            loss.backward()
+            optimizer.step()
+        
+        # Save final elos
+        with torch.no_grad():
+            self.elos = {model: bt_model.elos[model_to_idx[model]].item() 
+                        for model in model_list}
     
     def get_leaderboard(self) -> List[Dict[str, Any]]:
         """Return models sorted by elo"""
@@ -142,7 +152,6 @@ class BTHandler(Handler):
         ]
         leaderboard.sort(key=lambda x: x["elo"], reverse=True)
         
-        # Add ranks
         for i, entry in enumerate(leaderboard, 1):
             entry["rank"] = i
         
@@ -237,4 +246,3 @@ class Evaluator:
             print(f"{entry['rank']:<6} {entry['model']:<30} {entry['elo']:<10.1f}")
         
         print(f"{'='*60}\n")
-
