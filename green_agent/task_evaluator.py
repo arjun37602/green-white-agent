@@ -675,7 +675,7 @@ class TaskEvaluator:
         
         # Maximum expected values (reasonable budgets for tasks)
         MAX_REQUESTS = 10  # Most tasks should complete in ≤10 requests
-        MAX_TOKENS = 20000  # Reasonable token budget for complex tasks
+        MAX_TOKENS = 16384  # Reasonable token budget for complex tasks
         
         # 1. CORRECTNESS: 80% (Partial credit for checkpoint progress)
         # If we have unit test results, give partial credit based on tests passed
@@ -701,7 +701,7 @@ class TaskEvaluator:
         
         # 3. TOKEN USAGE: 10% - Proportional scoring
         # Formula: 0.10 * (1 - tokens_used / max_tokens)
-        # Examples: 1000 tokens = 0.095, 5000 = 0.075, 10000 = 0.05, 20000 = 0.00
+        # Examples: 1000 tokens = 0.095, 5000 = 0.075, 10000 = 0.05, 16384 = 0.00
         total_tokens = performance.get("total_tokens")
         if total_tokens is not None:
             tokens_ratio = min(total_tokens / MAX_TOKENS, 1.0)

@@ -351,10 +351,10 @@ class TerminalBenchAgent:
                 }
                 # Check if model requires max_completion_tokens instead of max_tokens
                 if "gpt-5" in self.model.lower() or "o3" in self.model.lower():
-                    api_params["max_completion_tokens"] = 20000
+                    api_params["max_completion_tokens"] = 16384
                     # gpt-5-nano only supports default temperature (1), don't set it
                 else:
-                    api_params["max_tokens"] = 20000
+                    api_params["max_tokens"] = 16384
                     api_params["temperature"] = 0.3
                 
                 # Log API request
@@ -745,7 +745,7 @@ class A2ATerminalBenchServer:
     def __init__(self, port=8001, host="0.0.0.0"):
         self.port = port
         self.host = host
-        self.agent = TerminalBenchAgent(model="gpt-5-nano", base_url=f"http://{host}:{port}")
+        self.agent = TerminalBenchAgent(model="gpt-4o-mini", base_url=f"http://{host}:{port}")
         self.logger = logging.getLogger(__name__)
         self.app = FastAPI(
             title="Terminal Bench A2A Agent",

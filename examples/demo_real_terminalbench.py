@@ -18,7 +18,7 @@ def main():
         print(f"Dataset not found at: {dataset_path}")
         return
     
-    sample_tasks = ["hello-world", "crack-7z-hash", "openssl-selfsigned-cert"]
+    sample_tasks = ["hello-world", "crack-7z-hash", "openssl-selfsigned-cert", "chess-best-move"]
     
     with tempfile.TemporaryDirectory() as temp_dir:
         green_agent = GreenAgentTerminalBench(
