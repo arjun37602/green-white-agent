@@ -7,6 +7,7 @@ import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
 from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
 
@@ -88,8 +89,9 @@ class BTHandler(Handler):
         return "both"
     
     def train(self, learning_rate: float = 0.1, num_epochs: int = 1000, 
-              init_mean: float = 1500.0, init_std: float = 50.0) -> None:
-        """Train elos using PyTorch"""
+              init_mean: float = 1500.0, init_std: float = 50.0,
+              tolerance: float = 1e-4) -> None:
+        """Train elos using PyTorch with convergence check"""
         # Get unique models
         models = set()
         for battle in self.battles:
@@ -124,7 +126,10 @@ class BTHandler(Handler):
         idx_b_tensor = torch.tensor(indices_b)
         y_true_tensor = torch.tensor(labels)
         
-        # Training loop
+        # Training loop with convergence check
+        prev_loss = float('inf')
+        converged = False
+        
         for epoch in range(num_epochs):
             optimizer.zero_grad()
             
@@ -135,9 +140,19 @@ class BTHandler(Handler):
             loss = -(y_true_tensor * torch.log(p_a_wins + 1e-10) + 
                     (1 - y_true_tensor) * torch.log(1 - p_a_wins + 1e-10)).mean()
             
+            # Check convergence
+            if abs(loss.item() - prev_loss) < tolerance:
+                converged = True
+                break
+            
+            prev_loss = loss.item()
+            
             # Backward pass
             loss.backward()
             optimizer.step()
+        
+        if not converged:
+            print(f"Warning: Training did not converge after {num_epochs} epochs (tolerance={tolerance})")
         
         # Save final elos
         with torch.no_grad():
@@ -246,3 +261,72 @@ class Evaluator:
             print(f"{entry['rank']:<6} {entry['model']:<30} {entry['elo']:<10.1f}")
         
         print(f"{'='*60}\n")
+    
+    def bootstrap(self, handler_name: str, num_battles: int, num_attempts: int = 100,
+                  num_std: float = 1.96, seed: int = None) -> Dict[str, Any]:
+        """
+        Bootstrap to estimate confidence intervals for Elo ratings.
+        
+        Args:
+            handler_name: Handler to use for comparisons
+            num_battles: Number of battles to sample per bootstrap
+            num_attempts: Number of bootstrap attempts
+            num_std: Number of standard deviations for confidence interval (1.96 = 95%)
+            seed: Random seed
+            
+        Returns:
+            Dict with mean, std, and confidence intervals for each model
+        """
+        if handler_name not in self.handlers:
+            raise ValueError(f"Handler {handler_name} not found")
+        
+        handler = self.handlers[handler_name]
+        original_battles = handler.battles.copy()
+        
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
+        
+        # Get all models
+        models = set()
+        for battle in original_battles:
+            models.add(battle.model_a)
+            models.add(battle.model_b)
+        model_list = sorted(list(models))
+        
+        # Bootstrap sampling
+        bootstrap_elos = {model: [] for model in model_list}
+        
+        for attempt in range(num_attempts):
+            # Resample battles with replacement
+            sampled_battles = random.choices(original_battles, k=num_battles)
+            handler.battles = sampled_battles
+            
+            # Train on sampled battles
+            handler.train()
+            
+            # Record elos
+            for model in model_list:
+                bootstrap_elos[model].append(handler.elos.get(model, 1500.0))
+        
+        # Restore original battles
+        handler.battles = original_battles
+        
+        # Compute statistics
+        results = {}
+        for model in model_list:
+            elos = np.array(bootstrap_elos[model])
+            mean = np.mean(elos)
+            std = np.std(elos)
+            ci_lower = mean - num_std * std
+            ci_upper = mean + num_std * std
+            
+            results[model] = {
+                "mean": float(mean),
+                "std": float(std),
+                "ci_lower": float(ci_lower),
+                "ci_upper": float(ci_upper),
+                "confidence_level": f"{int((1 - 2 * (1 - 0.95)) * 100)}%" if num_std == 1.96 else f"{num_std} std"
+            }
+        
+        return results

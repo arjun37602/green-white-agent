@@ -231,12 +231,38 @@ def main():
     leaderboard_path = os.path.join(output_dir, "leaderboard.json")
     save_leaderboard(leaderboard, leaderboard_path)
     
+    # Bootstrap experiment
+    print("\n" + "="*60)
+    print("BOOTSTRAP EXPERIMENT")
+    print("="*60)
+    print("Running bootstrap with 50 attempts...")
+    
+    bootstrap_results = evaluator.bootstrap(
+        "classic_bt", 
+        num_battles=num_battles, 
+        num_attempts=50, 
+        seed=42
+    )
+    
+    print("\nBootstrap Results (95% CI):")
+    sorted_results = sorted(bootstrap_results.items(), key=lambda x: x[1]['mean'], reverse=True)
+    for model, stats in sorted_results:
+        print(f"  {model:20s} Elo: {stats['mean']:6.1f} ± {stats['std']:5.1f}  "
+              f"CI: [{stats['ci_lower']:6.1f}, {stats['ci_upper']:6.1f}]")
+    
+    # Save bootstrap results
+    bootstrap_path = os.path.join(output_dir, "bootstrap_results.json")
+    with open(bootstrap_path, 'w') as f:
+        json.dump(bootstrap_results, f, indent=2)
+    print(f"\n✓ Bootstrap results saved to {bootstrap_path}")
+    
     # Save config
     config = {
         "models": models,
         "questions": questions,
         "num_attempts": num_attempts,
         "num_battles": num_battles,
+        "bootstrap_attempts": 50,
         "model_profiles": model_profiles,
         "generated_at": datetime.utcnow().isoformat()
     }
@@ -251,6 +277,7 @@ def main():
     print(f"Results saved to: {output_dir}/")
     print(f"  - {output_dir}/[model]/[question]/attempts.json")
     print(f"  - {output_dir}/leaderboard.json")
+    print(f"  - {output_dir}/bootstrap_results.json")
     print(f"  - {output_dir}/config.json")
 
 
