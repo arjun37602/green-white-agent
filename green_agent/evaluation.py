@@ -263,15 +263,15 @@ class Evaluator:
         print(f"{'='*60}\n")
     
     def bootstrap(self, handler_name: str, num_battles: int, num_attempts: int = 100,
-                  num_std: float = 1.96, seed: int = None) -> Dict[str, Any]:
+                  confidence_level: float = 0.95, seed: int = None) -> Dict[str, Any]:
         """
-        Bootstrap to estimate confidence intervals for Elo ratings.
+        Bootstrap to estimate confidence intervals for Elo ratings using quantiles.
         
         Args:
             handler_name: Handler to use for comparisons
             num_battles: Number of battles to sample per bootstrap
             num_attempts: Number of bootstrap attempts
-            num_std: Number of standard deviations for confidence interval (1.96 = 95%)
+            confidence_level: Confidence level (e.g., 0.95 for 95% CI)
             seed: Random seed
             
         Returns:
@@ -312,21 +312,25 @@ class Evaluator:
         # Restore original battles
         handler.battles = original_battles
         
-        # Compute statistics
+        # Compute statistics using quantiles
+        alpha = 1 - confidence_level
+        lower_q = alpha / 2
+        upper_q = 1 - alpha / 2
+        
         results = {}
         for model in model_list:
             elos = np.array(bootstrap_elos[model])
             mean = np.mean(elos)
             std = np.std(elos)
-            ci_lower = mean - num_std * std
-            ci_upper = mean + num_std * std
+            ci_lower = np.quantile(elos, lower_q)
+            ci_upper = np.quantile(elos, upper_q)
             
             results[model] = {
                 "mean": float(mean),
                 "std": float(std),
                 "ci_lower": float(ci_lower),
                 "ci_upper": float(ci_upper),
-                "confidence_level": f"{int((1 - 2 * (1 - 0.95)) * 100)}%" if num_std == 1.96 else f"{num_std} std"
+                "confidence_level": f"{int(confidence_level * 100)}%"
             }
         
         return results

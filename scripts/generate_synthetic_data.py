@@ -240,7 +240,8 @@ def main():
     bootstrap_results = evaluator.bootstrap(
         "classic_bt", 
         num_battles=num_battles, 
-        num_attempts=50, 
+        num_attempts=50,
+        confidence_level=0.95,
         seed=42
     )
     
