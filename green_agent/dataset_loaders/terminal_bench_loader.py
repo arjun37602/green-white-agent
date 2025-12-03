@@ -288,7 +288,8 @@ class TerminalBenchTaskLoader:
                 "run_tests_script_path": task.run_tests_script_path,
                 "dockerfile_path": task.dockerfile_path,
                 "docker_compose_path": task.docker_compose_path,
-                "task_deps_dir": task.task_deps_dir
+                "task_deps_dir": task.task_deps_dir,
+                "task_path": task.task_path
             }
         }
     
