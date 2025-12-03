@@ -52,7 +52,7 @@ class TaskEvaluator:
         self.attempt_store = attempt_store
     
     def evaluate(self, task_id: str, task_spec: Dict[str, Any], 
-                 command_history: List[CommandResult], sandbox_state: SandboxState, 
+                 command_history: List[CommandResult], 
                  sandbox_manager=None, sandbox_id: str = None,
                  white_agent_response: Optional[Dict[str, Any]] = None) -> EvaluationResult:
         """
@@ -75,17 +75,20 @@ class TaskEvaluator:
         # Extract evaluation criteria
         criteria = self._extract_criteria(task_spec)
         
-        # Perform different types of evaluation
-        # Try to run Terminal-Bench pytest tests first
-        pytest_results = None
-        if sandbox_manager and sandbox_id and "metadata" in task_spec:
-            pytest_results = self._run_terminal_bench_tests(sandbox_manager, sandbox_id, task_spec["metadata"])
+        # Run Terminal-Bench pytest tests (required)
+        if not sandbox_manager or not sandbox_id or "metadata" not in task_spec:
+            raise ValueError(f"Cannot evaluate task {task_id}: missing sandbox_manager, sandbox_id, or metadata")
         
-        unit_test_correctness = {"passed": True, "tests_run": 0, "tests_passed": 0, "details": "No pytest tests run"}
-        if pytest_results:
-            unit_test_correctness = pytest_results
+        pytest_results = self._run_terminal_bench_tests(sandbox_manager, sandbox_id, task_spec["metadata"])
         
-        correctness_result = self._evaluate_correctness(criteria, command_history, sandbox_state)
+        if not pytest_results or pytest_results["tests_run"] == 0:
+            raise ValueError(f"No pytest tests found or executed for task {task_id}")
+        
+        # Use pytest results as source of truth for correctness
+        correctness_result = {
+            "passed": pytest_results["passed"],
+            "unit_tests": pytest_results
+        }
         
         # Extract token/request counts from white agent response
         token_request_data = self._extract_token_and_request_counts(white_agent_response)
@@ -98,16 +101,11 @@ class TaskEvaluator:
         safety_result = self._evaluate_safety(criteria, command_history)
         efficiency_result = self._evaluate_efficiency(criteria, command_history)
         
-        # Override correctness with pytest results if available
-        if pytest_results and pytest_results["tests_run"] > 0:
-            correctness_result["passed"] = pytest_results["passed"]
-            correctness_result["unit_tests"] = pytest_results
+        # Binary scoring: 1.0 if all tests pass, 0.0 otherwise
+        overall_score = 1.0 if correctness_result["passed"] else 0.0
         
-        # Calculate overall score
-        overall_score = self._calculate_score(correctness_result, performance_result, safety_result, efficiency_result)
-        
-        # Determine if task passed
-        passed = overall_score >= 0.7 and correctness_result["passed"]
+        # Task passed if all tests passed
+        passed = correctness_result["passed"]
         
         # Save attempt if store available
         if self.attempt_store:
@@ -195,50 +193,6 @@ class TaskEvaluator:
                 criteria.max_tokens_per_request = metadata["max_tokens_per_request"]
         
         return criteria
-    
-    def _evaluate_correctness(self, criteria: EvaluationCriteria, 
-                            command_history: List[CommandResult], 
-                            sandbox_state: SandboxState) -> Dict[str, Any]:
-        """Evaluate correctness of task completion."""
-        result = {
-            "passed": True,
-            "file_checks": {},
-            "output_checks": {},
-            "command_checks": {},
-            "errors": []
-        }
-        
-        # Check file requirements
-        for file_path, expected_content in criteria.file_requirements.items():
-            file_check = self._check_file_requirement(file_path, expected_content, sandbox_state)
-            result["file_checks"][file_path] = file_check
-            
-            if not file_check["exists"]:
-                result["passed"] = False
-                result["errors"].append(f"Required file missing: {file_path}")
-            elif expected_content != ".*" and not file_check["content_matches"]:
-                result["passed"] = False
-                result["errors"].append(f"File content doesn't match requirement: {file_path}")
-        
-        # Check output requirements
-        for pattern in criteria.output_requirements:
-            output_check = self._check_output_requirement(pattern, command_history)
-            result["output_checks"][pattern] = output_check
-            
-            if not output_check["found"]:
-                result["passed"] = False
-                result["errors"].append(f"Required output pattern not found: {pattern}")
-        
-        # Check success conditions
-        for condition in criteria.success_conditions:
-            condition_check = self._check_success_condition(condition, command_history, sandbox_state)
-            result["command_checks"][condition] = condition_check
-            
-            if not condition_check["satisfied"]:
-                result["passed"] = False
-                result["errors"].append(f"Success condition not met: {condition}")
-        
-        return result
     
     def _evaluate_performance(self, command_history: List[CommandResult], 
                              total_tokens: Optional[int] = None,
@@ -355,46 +309,9 @@ class TaskEvaluator:
             "efficient": within_command_limit and within_time_limit and len(redundant_commands) == 0
         }
     
-    def _check_file_requirement(self, file_path: str, expected_content: str, 
-                              sandbox_state: SandboxState) -> Dict[str, Any]:
-        """Check if a file requirement is met."""
-        file_snapshot = sandbox_state.file_system_snapshot
-        
-        # Check if file exists with exact path
-        if file_path in file_snapshot["files"]:
-            actual_content = file_snapshot["files"][file_path]
-            
-            if expected_content == ".*":
-                return {"exists": True, "content_matches": True, "content": actual_content}
-            else:
-                content_matches = expected_content in actual_content
-                return {"exists": True, "content_matches": content_matches, "content": actual_content}
-        
-        # Check if file exists with app/ prefix (sandbox working directory)
-        app_file_path = f"app/{file_path}"
-        if app_file_path in file_snapshot["files"]:
-            actual_content = file_snapshot["files"][app_file_path]
-            
-            if expected_content == ".*":
-                return {"exists": True, "content_matches": True, "content": actual_content}
-            else:
-                content_matches = expected_content in actual_content
-                return {"exists": True, "content_matches": content_matches, "content": actual_content}
-        
-        # Check if file exists anywhere in the sandbox (fallback)
-        for existing_file_path, content in file_snapshot["files"].items():
-            if file_path in existing_file_path or existing_file_path.endswith(file_path):
-                if expected_content == ".*":
-                    return {"exists": True, "content_matches": True, "content": content}
-                else:
-                    content_matches = expected_content in content
-                    return {"exists": True, "content_matches": content_matches, "content": content}
-        
-        return {"exists": False, "content_matches": False, "content": None}
-    
     def _run_terminal_bench_tests(self, sandbox_manager, sandbox_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run Terminal-Bench pytest tests in the sandbox.
+        Run Terminal-Bench pytest tests in the Docker container.
         
         Args:
             sandbox_manager: Sandbox manager instance
@@ -410,145 +327,117 @@ class TaskEvaluator:
                 self.logger.warning("No valid test file found in metadata")
                 return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "No test file found"}
             
-            # Copy test file to sandbox
-            test_filename = os.path.basename(test_file_path)
-            sandbox_test_path = f"app/{test_filename}"
+            sandbox_info = sandbox_manager.get_sandbox_info(sandbox_id)
+            if not sandbox_info:
+                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "Sandbox not found"}
             
-            # Create app directory first
-            mkdir_result = sandbox_manager.execute_command(
-                sandbox_id,
-                "mkdir -p app"
-            )
-            
-            if not mkdir_result.success:
-                self.logger.warning(f"Failed to create app directory: {mkdir_result.stderr}")
-            
-            # Copy test file to sandbox
-            copy_result = sandbox_manager.execute_command(
-                sandbox_id, 
-                f"cp {test_file_path} {sandbox_test_path}"
-            )
-            
-            if not copy_result.success:
-                self.logger.error(f"Failed to copy test file to sandbox: {copy_result.stderr}")
-                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "Failed to copy test file"}
-            
-            # Install pytest in sandbox
-            install_result = sandbox_manager.execute_command(
-                sandbox_id,
-                "pip install pytest"
-            )
-            
-            if not install_result.success:
-                self.logger.warning(f"Failed to install pytest: {install_result.stderr}")
-                # Try to continue anyway - pytest might already be installed
-            
-            # Create symlink so pytest tests can find /app/* files
-            # Tests expect /app/file.txt, but we created ./app/file.txt in sandbox
-            symlink_result = sandbox_manager.execute_command(
-                sandbox_id,
-                "mkdir -p /tmp/test_app && cp -r app/* /tmp/test_app/ 2>/dev/null || true"
-            )
-            
-            # Modify test file to use /tmp/test_app instead of /app
-            # This is a workaround since we can't create /app
-            sandbox_manager.execute_command(
-                sandbox_id,
-                f"sed -i.bak 's|/app|/tmp/test_app|g' {sandbox_test_path} 2>/dev/null || sed -i '' 's|/app|/tmp/test_app|g' {sandbox_test_path} 2>/dev/null || true"
-            )
-            
-            # Also copy files to /tmp/test_app
-            sandbox_manager.execute_command(
-                sandbox_id,
-                "cp -r ./app/* /tmp/test_app/ 2>/dev/null || true"
-            )
-            
-            # Run pytest
-            pytest_result = sandbox_manager.execute_command(
-                sandbox_id,
-                f"python -m pytest {sandbox_test_path} -v"
-            )
-            
-            # Parse pytest output
-            output = pytest_result.stdout + pytest_result.stderr
-            
-            # Count tests using pytest's summary line (e.g., "2 passed in 0.5s" or "1 passed, 1 failed in 0.5s")
-            import re
-            
-            # Try to parse the summary line first
-            summary_match = re.search(r'(\d+)\s+passed', output)
-            tests_passed = int(summary_match.group(1)) if summary_match else 0
-            
-            failed_match = re.search(r'(\d+)\s+failed', output)
-            tests_failed = int(failed_match.group(1)) if failed_match else 0
-            
-            tests_run = tests_passed + tests_failed
-            
-            # If no summary found, fall back to counting PASSED/FAILED markers
-            if tests_run == 0:
-                passed_matches = re.findall(r"PASSED", output)
-                tests_passed = len(passed_matches)
-                failed_matches = re.findall(r"FAILED", output)
-                tests_failed = len(failed_matches)
-                tests_run = tests_passed + tests_failed
-            
-            passed = pytest_result.success and tests_failed == 0
-            
-            self.logger.info(f"Pytest results: {tests_passed}/{tests_run} tests passed, {tests_failed} failed")
-            
-            return {
-                "passed": passed,
-                "tests_run": tests_run,
-                "tests_passed": tests_passed,
-                "tests_failed": tests_failed,
-                "details": f"Pytest: {tests_passed}/{tests_run} passed",
-                "raw_output": output
-            }
-            
+            return self._run_tests_in_docker(sandbox_manager, sandbox_id, test_file_path, sandbox_info)
+                
         except Exception as e:
             self.logger.error(f"Error running Terminal-Bench tests: {e}")
             return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": f"Error: {e}"}
     
-    def _check_output_requirement(self, pattern: str, command_history: List[CommandResult]) -> Dict[str, Any]:
-        """Check if an output requirement is met."""
-        all_output = ""
-        for cmd in command_history:
-            all_output += cmd.stdout + "\n" + cmd.stderr + "\n"
-        
-        found = pattern.lower() in all_output.lower()
-        return {"found": found, "pattern": pattern, "searched_output": all_output[:500]}
+    def _run_tests_in_docker(self, sandbox_manager, sandbox_id: str, test_file_path: str, 
+                            sandbox_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Run tests inside a Docker container (Terminal Bench style)."""
+        try:
+            container = sandbox_info.get("container")
+            container_name = sandbox_info.get("container_name")
+            environment_spec = sandbox_info.get("environment_spec", {})
+            
+            if not container or not container_name:
+                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "No container found"}
+            
+            # Get the main run-tests.sh script path from metadata
+            run_tests_script_path = environment_spec.get("run_tests_script_path")
+            if not run_tests_script_path or not os.path.exists(run_tests_script_path):
+                self.logger.error(f"run-tests.sh not found at: {run_tests_script_path}")
+                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "run-tests.sh not found"}
+            
+            # Copy the main run-tests.sh script to container
+            self.logger.info(f"Copying run-tests.sh from {run_tests_script_path} to container")
+            import subprocess
+            copy_cmd = ["docker", "cp", run_tests_script_path, f"{container_name}:/run-tests.sh"]
+            result = subprocess.run(copy_cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                self.logger.error(f"Failed to copy run-tests.sh: {result.stderr}")
+                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "Failed to copy run-tests.sh"}
+            
+            # Copy test directory into container
+            test_dir = os.path.dirname(test_file_path)
+            self.logger.info(f"Copying tests from {test_dir} to container")
+            
+            copy_cmd = ["docker", "cp", test_dir, f"{container_name}:/"]
+            result = subprocess.run(copy_cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                self.logger.error(f"Failed to copy tests: {result.stderr}")
+                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "Failed to copy tests"}
+            
+            # Run the main run-tests.sh script
+            # This script handles all dependencies and test execution
+            test_dir_name = os.path.basename(test_dir)
+            self.logger.info(f"Running Terminal Bench test script: /run-tests.sh")
+            pytest_result = sandbox_manager.execute_command(
+                sandbox_id,
+                f"cd /app && TEST_DIR=/{test_dir_name} bash /run-tests.sh",
+                timeout=180  # Tests can take time (including dependency installation)
+            )
+            
+            if not pytest_result.success:
+                self.logger.warning(
+                    f"Test execution completed with exit code {pytest_result.returncode}"
+                )
+            
+            # Log full pytest output for debugging
+            self.logger.info(f"Test stdout:\n{pytest_result.stdout}")
+            self.logger.info(f"Test stderr:\n{pytest_result.stderr}")
+            
+            return self._parse_pytest_output(pytest_result)
+            
+        except Exception as e:
+            self.logger.error(f"Error running tests in Docker: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": f"Docker test error: {e}"}
     
-    def _check_success_condition(self, condition: str, command_history: List[CommandResult], 
-                               sandbox_state: SandboxState) -> Dict[str, Any]:
-        """Check if a success condition is met."""
-        condition_lower = condition.lower()
+    
+    def _parse_pytest_output(self, pytest_result) -> Dict[str, Any]:
+        """Parse pytest output and return test results."""
+        import re
         
-        # Simple keyword-based checking
-        if "file exists" in condition_lower or "exists" in condition_lower:
-            # Check if any files OR directories were created
-            files_created = len(sandbox_state.file_system_snapshot["files"]) > 0
-            directories_created = len(sandbox_state.file_system_snapshot["directories"]) > 0
-            return {"satisfied": files_created or directories_created, "condition": condition, "details": "File/directory existence check"}
+        output = pytest_result.stdout + pytest_result.stderr
         
-        if "directory" in condition_lower and "exists" in condition_lower:
-            # Check specifically for directories
-            directories_created = len(sandbox_state.file_system_snapshot["directories"]) > 0
-            return {"satisfied": directories_created, "condition": condition, "details": "Directory existence check"}
+        # Count tests using pytest's summary line (e.g., "2 passed in 0.5s" or "1 passed, 1 failed in 0.5s")
+        summary_match = re.search(r'(\d+)\s+passed', output)
+        tests_passed = int(summary_match.group(1)) if summary_match else 0
         
-        if "navigate" in condition_lower or "cd" in condition_lower:
-            # Check if cd commands were executed successfully
-            cd_commands = [cmd for cmd in command_history if cmd.command.startswith("cd")]
-            cd_success = any(cmd.success for cmd in cd_commands)
-            return {"satisfied": cd_success, "condition": condition, "details": "Navigation check"}
+        failed_match = re.search(r'(\d+)\s+failed', output)
+        tests_failed = int(failed_match.group(1)) if failed_match else 0
         
-        if "success" in condition_lower or "completed" in condition_lower:
-            # Check if last command was successful
-            if command_history:
-                last_command_success = command_history[-1].success
-                return {"satisfied": last_command_success, "condition": condition, "details": "Last command success"}
+        tests_run = tests_passed + tests_failed
         
-        # Default: be strict - only pass if we can verify the condition
-        return {"satisfied": False, "condition": condition, "details": "No specific condition matched - strict evaluation"}
+        # If no summary found, fall back to counting PASSED/FAILED markers
+        if tests_run == 0:
+            passed_matches = re.findall(r"PASSED", output)
+            tests_passed = len(passed_matches)
+            failed_matches = re.findall(r"FAILED", output)
+            tests_failed = len(failed_matches)
+            tests_run = tests_passed + tests_failed
+        
+        passed = pytest_result.success and tests_failed == 0
+        
+        self.logger.info(f"Pytest results: {tests_passed}/{tests_run} tests passed, {tests_failed} failed")
+        
+        return {
+            "passed": passed,
+            "tests_run": tests_run,
+            "tests_passed": tests_passed,
+            "tests_failed": tests_failed,
+            "details": f"Pytest: {tests_passed}/{tests_run} passed",
+            "raw_output": output
+        }
     
     def _extract_token_and_request_counts(self, white_agent_response: Optional[Dict[str, Any]]) -> Dict[str, Optional[int]]:
         """
@@ -666,55 +555,6 @@ class TaskEvaluator:
                     redundant.append(f"Inefficient sequence: '{current}' followed by '{next_cmd}'")
         
         return redundant
-    
-    def _calculate_score(self, correctness: Dict[str, Any], performance: Dict[str, Any], 
-                        safety: Dict[str, Any], efficiency: Dict[str, Any]) -> float:
-        """
-        Calculate overall evaluation score.
-        
-        Scoring breakdown:
-        - Correctness: 80% (Partial credit based on checkpoint progress)
-        - Turns (API requests): 10% (Proportional - fewer = better)
-        - Token usage: 10% (Proportional - less = better)
-        """
-        score = 0.0
-        
-        # Maximum expected values (reasonable budgets for tasks)
-        MAX_REQUESTS = 10  # Most tasks should complete in ≤10 requests
-        MAX_TOKENS = 16384  # Reasonable token budget for complex tasks
-        
-        # 1. CORRECTNESS: 80% (Partial credit for checkpoint progress)
-        # If we have unit test results, give partial credit based on tests passed
-        if "unit_tests" in correctness and correctness["unit_tests"].get("tests_run", 0) > 0:
-            tests_run = correctness["unit_tests"]["tests_run"]
-            tests_passed = correctness["unit_tests"]["tests_passed"]
-            # Proportional credit: (tests_passed / tests_run) * 0.80
-            correctness_score = (tests_passed / tests_run) * 0.80
-            score += correctness_score
-            self.logger.info(f"✅ Partial correctness: {tests_passed}/{tests_run} tests passed → {correctness_score:.2f}/0.80")
-        elif correctness["passed"]:
-            # Binary pass/fail if no unit tests
-            score += 0.80
-        
-        # 2. TURNS (API Requests): 10% - Proportional scoring
-        # Formula: 0.10 * (1 - requests_used / max_requests)
-        # Examples: 1 request = 0.09, 2 = 0.08, 5 = 0.05, 10 = 0.00
-        total_requests = performance.get("total_requests")
-        if total_requests is not None:
-            requests_ratio = min(total_requests / MAX_REQUESTS, 1.0)
-            turns_score = 0.10 * (1.0 - requests_ratio)
-            score += turns_score
-        
-        # 3. TOKEN USAGE: 10% - Proportional scoring
-        # Formula: 0.10 * (1 - tokens_used / max_tokens)
-        # Examples: 1000 tokens = 0.095, 5000 = 0.075, 10000 = 0.05, 16384 = 0.00
-        total_tokens = performance.get("total_tokens")
-        if total_tokens is not None:
-            tokens_ratio = min(total_tokens / MAX_TOKENS, 1.0)
-            tokens_score = 0.10 * (1.0 - tokens_ratio)
-            score += tokens_score
-        
-        return min(score, 1.0)
     
     def _save_attempt(
         self,
