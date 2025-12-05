@@ -1,0 +1,50 @@
+{
+  "additionalInterfaces": null,
+  "capabilities": {
+    "extensions": null,
+    "pushNotifications": false,
+    "stateTransitionHistory": null,
+    "streaming": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "Green agent for managing Terminal Bench task evaluation",
+  "documentationUrl": null,
+  "iconUrl": null,
+  "name": "terminal_bench_green_agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.3.0",
+  "provider": {
+    "organization": "Terminal Bench Green Agent",
+    "url": "http://localhost:9001"
+  },
+  "security": null,
+  "securitySchemes": null,
+  "signatures": null,
+  "skills": [
+    {
+      "description": "Evaluate white agent performance on Terminal Bench tasks",
+      "examples": null,
+      "id": "task_evaluation",
+      "inputModes": [
+        "text/plain"
+      ],
+      "name": "Task Evaluation",
+      "outputModes": [
+        "text/plain"
+      ],
+      "security": null,
+      "tags": [
+        "evaluation",
+        "terminal-bench"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": null,
+  "url": "https://adelia-majestic-eminently.ngrok-free.dev",
+  "version": "1.0.0"
+}
