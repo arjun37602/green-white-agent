@@ -38,15 +38,15 @@ pip install -e .
 echo ""
 echo "Verifying installation..."
 if python -c "import terminal_bench" 2>/dev/null; then
-    echo "✓ terminal-bench is installed"
+    echo "terminal-bench is installed"
 else
-    echo "⚠️  Warning: terminal-bench import test failed (expected due to broken imports)"
+    echo "Warning: terminal-bench import test failed (expected due to broken imports)"
 fi
 
 if python -c "import sys; import os; sp = os.path.join(sys.prefix, 'lib', 'python3.12', 'site-packages', 'terminal_bench'); print('Found' if os.path.exists(sp) else 'Not found')" 2>/dev/null | grep -q "Found"; then
-    echo "✓ terminal-bench found in site-packages"
+    echo "terminal-bench found in site-packages"
 else
-    echo "⚠️  Could not verify terminal-bench location (but installation may have succeeded)"
+    echo "Could not verify terminal-bench location (but installation may have succeeded)"
 fi
 
 

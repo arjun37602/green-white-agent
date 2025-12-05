@@ -1,0 +1,23 @@
+protocolVersion = "0.3.0"
+name = "terminal_bench_green_agent"
+description = "Green agent for managing Terminal Bench task evaluation"
+version = "1.0.0"
+defaultInputModes = ["text/plain"]
+defaultOutputModes = ["text/plain"]
+
+[provider]
+organization = "Terminal Bench Green Agent"
+url = "http://localhost:9001"
+
+[[skills]]
+id = "task_evaluation"
+name = "Task Evaluation"
+description = "Evaluate white agent performance on Terminal Bench tasks"
+tags = ["evaluation", "terminal-bench"]
+inputModes = ["text/plain"]
+outputModes = ["text/plain"]
+
+[capabilities]
+streaming = false
+pushNotifications = false
+longRunningTasks = true

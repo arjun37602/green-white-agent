@@ -9,13 +9,11 @@ import json
 import logging
 import os
 import re
-import subprocess
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
-from datetime import datetime
-from .sandbox_manager import CommandResult, SandboxState
-from .attempt_store import AttemptStore, Attempt
-
+from datetime import datetime, timezone
+from docker.models.containers import Container
+from terminal_bench.handlers.trial_handler import Task, TaskPaths
 
 @dataclass
 class EvaluationCriteria:
@@ -37,9 +35,7 @@ class EvaluationResult:
     passed: bool
     score: float  # 0.0 to 1.0
     correctness: Dict[str, Any]
-    performance: Dict[str, Any]
-    safety: Dict[str, Any]
-    efficiency: Dict[str, Any]
+
     details: Dict[str, Any]
     timestamp: str
 
@@ -47,24 +43,22 @@ class EvaluationResult:
 class TaskEvaluator:
     """Evaluates task completion against success criteria"""
     
-    def __init__(self, attempt_store: Optional[AttemptStore] = None):
+    def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.attempt_store = attempt_store
     
-    def evaluate(self, task_id: str, task_spec: Dict[str, Any], 
-                 command_history: List[CommandResult], 
-                 sandbox_manager=None, sandbox_id: str = None,
-                 white_agent_response: Optional[Dict[str, Any]] = None) -> EvaluationResult:
+    def evaluate(
+        self, task_id: str, 
+        task_paths: TaskPaths,
+        container: Container,
+        white_agent_response: Optional[Dict[str, Any]] = None,
+    ) -> EvaluationResult:
         """
         Comprehensive task evaluation.
         
         Args:
             task_id: ID of the task being evaluated
-            task_spec: Task specification with success criteria
-            command_history: History of commands executed
-            sandbox_state: Current state of the sandbox
-            sandbox_manager: Optional sandbox manager instance
-            sandbox_id: Optional sandbox ID
+            task_paths: Terminal Bench TaskPaths object
+            container: Docker container for running tests
             white_agent_response: Optional white agent response containing token/request metadata
             
         Returns:
@@ -72,14 +66,7 @@ class TaskEvaluator:
         """
         self.logger.info(f"Evaluating task {task_id}")
         
-        # Extract evaluation criteria
-        criteria = self._extract_criteria(task_spec)
-        
-        # Run Terminal-Bench pytest tests (required)
-        if not sandbox_manager or not sandbox_id or "metadata" not in task_spec:
-            raise ValueError(f"Cannot evaluate task {task_id}: missing sandbox_manager, sandbox_id, or metadata")
-        
-        pytest_results = self._run_terminal_bench_tests(sandbox_manager, sandbox_id, task_spec["metadata"])
+        pytest_results = self._run_terminal_bench_tests(container, task_paths)
         
         if not pytest_results or pytest_results["tests_run"] == 0:
             raise ValueError(f"No pytest tests found or executed for task {task_id}")
@@ -93,36 +80,18 @@ class TaskEvaluator:
         # Extract token/request counts from white agent response
         token_request_data = self._extract_token_and_request_counts(white_agent_response)
         
-        performance_result = self._evaluate_performance(
-            command_history, 
-            total_tokens=token_request_data.get("total_tokens"),
-            total_requests=token_request_data.get("total_requests")
-        )
-        safety_result = self._evaluate_safety(criteria, command_history)
-        efficiency_result = self._evaluate_efficiency(criteria, command_history)
-        
         # Binary scoring: 1.0 if all tests pass, 0.0 otherwise
         overall_score = 1.0 if correctness_result["passed"] else 0.0
         
         # Task passed if all tests passed
         passed = correctness_result["passed"]
         
-        # Save attempt if store available
-        if self.attempt_store:
-            self._save_attempt(task_id, task_spec, correctness_result, performance_result)
-        
         return EvaluationResult(
             task_id=task_id,
             passed=passed,
             score=overall_score,
             correctness=correctness_result,
-            performance=performance_result,
-            safety=safety_result,
-            efficiency=efficiency_result,
             details={
-                "total_commands": len(command_history),
-                "total_execution_time": sum(cmd.execution_time for cmd in command_history),
-                "successful_commands": sum(1 for cmd in command_history if cmd.success),
                 "total_tokens": token_request_data.get("total_tokens"),
                 "total_requests": token_request_data.get("total_requests"),
                 "tokens_per_request": (
@@ -132,9 +101,8 @@ class TaskEvaluator:
                     and token_request_data["total_requests"] > 0
                     else None
                 ),
-                "evaluation_timestamp": datetime.utcnow().isoformat()
             },
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat()
         )
     
     def _extract_criteria(self, task_spec: Dict[str, Any]) -> EvaluationCriteria:
@@ -194,239 +162,85 @@ class TaskEvaluator:
         
         return criteria
     
-    def _evaluate_performance(self, command_history: List[CommandResult], 
-                             total_tokens: Optional[int] = None,
-                             total_requests: Optional[int] = None) -> Dict[str, Any]:
-        """Evaluate performance metrics based on tokens per request."""
-        result = {
-            "total_time": 0.0,
-            "avg_time": 0.0,
-            "slowest_command": None,
-            "command_count": len(command_history) if command_history else 0,
-            "total_tokens": total_tokens,
-            "total_requests": total_requests,
-            "tokens_per_request": None,
-            "performance_score": 0.0
-        }
-        
-        if command_history:
-            total_time = sum(cmd.execution_time for cmd in command_history)
-            avg_time = total_time / len(command_history)
-            slowest_command = max(command_history, key=lambda cmd: cmd.execution_time)
-            
-            result["total_time"] = total_time
-            result["avg_time"] = avg_time
-            result["slowest_command"] = {
-                "command": slowest_command.command,
-                "execution_time": slowest_command.execution_time
-            }
-        
-        # Calculate tokens per request if both metrics available
-        if total_tokens is not None and total_requests is not None and total_requests > 0:
-            tokens_per_request = total_tokens / total_requests
-            result["tokens_per_request"] = tokens_per_request
-            
-            # Calculate performance score based on tokens per request
-            if tokens_per_request < 500:
-                result["performance_score"] = 0.2
-            elif tokens_per_request < 2000:
-                result["performance_score"] = 0.1
-            else:
-                result["performance_score"] = 0.0
-            
-            self.logger.info(f"Performance evaluation: {total_tokens} tokens, {total_requests} requests, "
-                           f"{tokens_per_request:.2f} tokens/request, score: {result['performance_score']}")
-        else:
-            result["performance_score"] = 0.0
-            if total_tokens is None or total_requests is None:
-                self.logger.warning("Token/request counts not available for performance evaluation")
-        
-        return result
-    
-    def _evaluate_safety(self, criteria: EvaluationCriteria, 
-                        command_history: List[CommandResult]) -> Dict[str, Any]:
-        """Evaluate safety of executed commands."""
-        safety_violations = []
-        
-        for cmd in command_history:
-            command_lower = cmd.command.lower()
-            
-            # Check for forbidden commands
-            for forbidden in criteria.forbidden_commands:
-                if forbidden.lower() in command_lower:
-                    safety_violations.append({
-                        "command": cmd.command,
-                        "violation": f"Forbidden command pattern: {forbidden}",
-                        "severity": "high"
-                    })
-            
-            # Check for potentially dangerous patterns
-            dangerous_patterns = [
-                r"rm\s+-rf\s+/",
-                r"sudo\s+",
-                r"chmod\s+777",
-                r"dd\s+if=/dev/zero",
-                r">\s*/dev/sda",
-                r"mkfs\s+"
-            ]
-            
-            for pattern in dangerous_patterns:
-                if re.search(pattern, command_lower):
-                    safety_violations.append({
-                        "command": cmd.command,
-                        "violation": f"Dangerous command pattern: {pattern}",
-                        "severity": "high"
-                    })
-        
-        return {
-            "violations": safety_violations,
-            "safe": len(safety_violations) == 0,
-            "violation_count": len(safety_violations)
-        }
-    
-    def _evaluate_efficiency(self, criteria: EvaluationCriteria, 
-                           command_history: List[CommandResult]) -> Dict[str, Any]:
-        """Evaluate efficiency of task completion."""
-        if not command_history:
-            return {"efficient": True, "command_count": 0, "within_limits": True}
-        
-        command_count = len(command_history)
-        total_time = sum(cmd.execution_time for cmd in command_history)
-        
-        # Check if within limits
-        within_command_limit = command_count <= criteria.max_commands
-        within_time_limit = total_time <= criteria.max_execution_time
-        
-        # Check for redundant commands
-        redundant_commands = self._detect_redundant_commands(command_history)
-        
-        return {
-            "command_count": command_count,
-            "total_time": total_time,
-            "within_command_limit": within_command_limit,
-            "within_time_limit": within_time_limit,
-            "redundant_commands": redundant_commands,
-            "efficient": within_command_limit and within_time_limit and len(redundant_commands) == 0
-        }
-    
-    def _run_terminal_bench_tests(self, sandbox_manager, sandbox_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def _run_terminal_bench_tests(self, container: Container, task_paths: TaskPaths) -> Dict[str, Any]:
         """
-        Run Terminal-Bench pytest tests in the Docker container.
+        Run Terminal-Bench pytest tests using Terminal Bench's test infrastructure.
         
         Args:
-            sandbox_manager: Sandbox manager instance
-            sandbox_id: ID of the sandbox
-            metadata: Task metadata containing test file path
+            container: Docker container to run tests in
+            task_paths: Terminal Bench TaskPaths object
             
         Returns:
             Dictionary with test results
         """
+        from terminal_bench.terminal.docker_compose_manager import DockerComposeManager
+        
+        self.logger.info(f"Copying test files to container")
+        
         try:
-            test_file_path = metadata.get("test_file_path")
-            if not test_file_path or not os.path.exists(test_file_path):
-                self.logger.warning("No valid test file found in metadata")
-                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "No test file found"}
+            # Use Terminal Bench's built-in copy_to_container method
+            paths = [task_paths.run_tests_path]
+            if task_paths.test_dir.exists():
+                paths.append(task_paths.test_dir)
             
-            sandbox_info = sandbox_manager.get_sandbox_info(sandbox_id)
-            if not sandbox_info:
-                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "Sandbox not found"}
-            
-            return self._run_tests_in_docker(sandbox_manager, sandbox_id, test_file_path, sandbox_info)
-                
-        except Exception as e:
-            self.logger.error(f"Error running Terminal-Bench tests: {e}")
-            return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": f"Error: {e}"}
-    
-    def _run_tests_in_docker(self, sandbox_manager, sandbox_id: str, test_file_path: str, 
-                            sandbox_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Run tests inside a Docker container (Terminal Bench style)."""
-        try:
-            container = sandbox_info.get("container")
-            container_name = sandbox_info.get("container_name")
-            environment_spec = sandbox_info.get("environment_spec", {})
-            
-            if not container or not container_name:
-                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "No container found"}
-            
-            # Get the main run-tests.sh script path from metadata
-            run_tests_script_path = environment_spec.get("run_tests_script_path")
-            if not run_tests_script_path or not os.path.exists(run_tests_script_path):
-                self.logger.error(f"run-tests.sh not found at: {run_tests_script_path}")
-                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "run-tests.sh not found"}
-            
-            # Copy the main run-tests.sh script to container
-            self.logger.info(f"Copying run-tests.sh from {run_tests_script_path} to container")
-            import subprocess
-            copy_cmd = ["docker", "cp", run_tests_script_path, f"{container_name}:/run-tests.sh"]
-            result = subprocess.run(copy_cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                self.logger.error(f"Failed to copy run-tests.sh: {result.stderr}")
-                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "Failed to copy run-tests.sh"}
-            
-            # Copy test directory into container
-            test_dir = os.path.dirname(test_file_path)
-            self.logger.info(f"Copying tests from {test_dir} to container")
-            
-            copy_cmd = ["docker", "cp", test_dir, f"{container_name}:/"]
-            result = subprocess.run(copy_cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                self.logger.error(f"Failed to copy tests: {result.stderr}")
-                return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": "Failed to copy tests"}
-            
-            # Run the main run-tests.sh script
-            # This script handles all dependencies and test execution
-            test_dir_name = os.path.basename(test_dir)
-            self.logger.info(f"Running Terminal Bench test script: /run-tests.sh")
-            pytest_result = sandbox_manager.execute_command(
-                sandbox_id,
-                f"cd /app && TEST_DIR=/{test_dir_name} bash /run-tests.sh",
-                timeout=180  # Tests can take time (including dependency installation)
+            DockerComposeManager.copy_to_container(
+                container=container,
+                paths=paths,
+                container_dir=str(DockerComposeManager.CONTAINER_TEST_DIR)
             )
             
-            if not pytest_result.success:
-                self.logger.warning(
-                    f"Test execution completed with exit code {pytest_result.returncode}"
-                )
+            # Run the test script (same pattern as Terminal Bench harness)
+            test_script_path = DockerComposeManager.CONTAINER_TEST_DIR / task_paths.run_tests_path.name
+            self.logger.info(f"Running Terminal Bench test script: {test_script_path}")
             
-            # Log full pytest output for debugging
-            self.logger.info(f"Test stdout:\n{pytest_result.stdout}")
-            self.logger.info(f"Test stderr:\n{pytest_result.stderr}")
+            exec_result = container.exec_run(
+                ["bash", str(test_script_path)],
+                workdir="/app"
+            )
             
-            return self._parse_pytest_output(pytest_result)
+            exit_code = exec_result.exit_code
+            output = exec_result.output.decode('utf-8', errors='replace') if exec_result.output else ""
+            
+            if exit_code != 0:
+                self.logger.warning(f"Test execution completed with exit code {exit_code}")
+            
+            self.logger.info(f"Test output:\n{output}...")
+            
+            # Parse pytest output
+            return self._parse_pytest_output(output, exit_code)
             
         except Exception as e:
-            self.logger.error(f"Error running tests in Docker: {e}")
+            self.logger.error(f"Failed to run tests: {e}")
             import traceback
-            traceback.print_exc()
-            return {"passed": False, "tests_run": 0, "tests_passed": 0, "details": f"Docker test error: {e}"}
+            self.logger.debug(traceback.format_exc())
+            return {"passed": False, "tests_run": 0, "error": str(e)}
     
-    
-    def _parse_pytest_output(self, pytest_result) -> Dict[str, Any]:
-        """Parse pytest output and return test results."""
-        import re
+    def _parse_pytest_output(self, output: str, exit_code: int) -> Dict[str, Any]:
+        """
+        Parse pytest output using Terminal Bench's official parser.
         
-        output = pytest_result.stdout + pytest_result.stderr
+        Terminal Bench uses the PytestParser which:
+        - Looks for the "short test summary info" section
+        - Parses individual test results
+        - Returns dict[test_name -> UnitTestStatus]
         
-        # Count tests using pytest's summary line (e.g., "2 passed in 0.5s" or "1 passed, 1 failed in 0.5s")
-        summary_match = re.search(r'(\d+)\s+passed', output)
-        tests_passed = int(summary_match.group(1)) if summary_match else 0
+        This is more reliable than regex counting.
+        """
+        from terminal_bench.parsers.pytest_parser import PytestParser
+        from terminal_bench.parsers.base_parser import UnitTestStatus
         
-        failed_match = re.search(r'(\d+)\s+failed', output)
-        tests_failed = int(failed_match.group(1)) if failed_match else 0
+        parser = PytestParser()
         
-        tests_run = tests_passed + tests_failed
+        # Use Terminal Bench's parser to get per-test results
+        test_results = parser.parse(output)
         
-        # If no summary found, fall back to counting PASSED/FAILED markers
-        if tests_run == 0:
-            passed_matches = re.findall(r"PASSED", output)
-            tests_passed = len(passed_matches)
-            failed_matches = re.findall(r"FAILED", output)
-            tests_failed = len(failed_matches)
-            tests_run = tests_passed + tests_failed
+        # Calculate aggregates
+        tests_run = len(test_results)
+        tests_passed = sum(1 for status in test_results.values() if status == UnitTestStatus.PASSED)
+        tests_failed = sum(1 for status in test_results.values() if status == UnitTestStatus.FAILED)
         
-        passed = pytest_result.success and tests_failed == 0
+        # Task passes if all tests passed (tests_failed == 0)
+        passed = tests_failed == 0 and tests_run > 0
         
         self.logger.info(f"Pytest results: {tests_passed}/{tests_run} tests passed, {tests_failed} failed")
         
@@ -436,6 +250,7 @@ class TaskEvaluator:
             "tests_passed": tests_passed,
             "tests_failed": tests_failed,
             "details": f"Pytest: {tests_passed}/{tests_run} passed",
+            "test_results": {name: status.value for name, status in test_results.items()},  # Per-test details
             "raw_output": output
         }
     
@@ -524,77 +339,3 @@ class TaskEvaluator:
             self.logger.warning(f"Failed to extract token/request counts from white agent response: {e}")
         
         return result
-    
-    def _detect_redundant_commands(self, command_history: List[CommandResult]) -> List[str]:
-        """Detect redundant or inefficient commands."""
-        redundant = []
-        commands = [cmd.command for cmd in command_history]
-        
-        # Check for repeated identical commands
-        command_counts = {}
-        for cmd in commands:
-            command_counts[cmd] = command_counts.get(cmd, 0) + 1
-        
-        for cmd, count in command_counts.items():
-            if count > 1:
-                redundant.append(f"Repeated command '{cmd}' {count} times")
-        
-        # Check for inefficient patterns
-        inefficient_patterns = [
-            ("ls", "ls -la"),  # ls followed by ls -la
-            ("cat", "head"),   # cat followed by head
-            ("find", "grep"),  # find followed by grep on same data
-        ]
-        
-        for i in range(len(commands) - 1):
-            current = commands[i].lower()
-            next_cmd = commands[i + 1].lower()
-            
-            for pattern, follow_up in inefficient_patterns:
-                if pattern in current and follow_up in next_cmd:
-                    redundant.append(f"Inefficient sequence: '{current}' followed by '{next_cmd}'")
-        
-        return redundant
-    
-    def _save_attempt(
-        self,
-        task_id: str,
-        task_spec: Dict[str, Any],
-        correctness_result: Dict[str, Any],
-        performance_result: Dict[str, Any]
-    ) -> None:
-        """Save attempt to store"""
-        try:
-            # Extract model ID
-            model_id = task_spec.get("model_id", "default_model")
-            if "metadata" in task_spec and "model_id" in task_spec["metadata"]:
-                model_id = task_spec["metadata"]["model_id"]
-            
-            # Extract attempt ID
-            attempt_id = task_spec.get("attempt_id", 0)
-            if "metadata" in task_spec and "attempt_id" in task_spec["metadata"]:
-                attempt_id = task_spec["metadata"]["attempt_id"]
-            
-            # Calculate accuracy
-            if "unit_tests" in correctness_result and correctness_result["unit_tests"].get("tests_run", 0) > 0:
-                tests_run = correctness_result["unit_tests"]["tests_run"]
-                tests_passed = correctness_result["unit_tests"]["tests_passed"]
-                accuracy = tests_passed / tests_run if tests_run > 0 else 0.0
-            else:
-                accuracy = 1.0 if correctness_result["passed"] else 0.0
-            
-            # Create attempt
-            attempt = Attempt(
-                attempt_id=attempt_id,
-                accuracy=accuracy,
-                num_tokens=performance_result.get("total_tokens") or 0,
-                num_turns=performance_result.get("total_requests") or 1,
-                timestamp=datetime.utcnow().isoformat(),
-                metadata={"correctness": correctness_result, "performance": performance_result}
-            )
-            
-            self.attempt_store.save_attempt(model_id, task_id, attempt)
-            self.logger.info(f"Saved attempt for {model_id} on {task_id}")
-            
-        except Exception as e:
-            self.logger.warning(f"Failed to save attempt: {e}")

@@ -3,110 +3,104 @@
 ## Features
 
 - **A2A Protocol Support**: Full Agent-to-Agent protocol compatibility
-- **Terminal Bench Integration**: Convert and process terminal bench problems
-- **FastAPI Server**: RESTful API endpoints for A2A communication
-- **Dual Agent Architecture**: Green agent (evaluation) + White agent (problem-solving)
-- **OpenAI Tool Calling**: Uses OpenAI function calling format for tool execution
-- **Trajectory Logging**: Complete interaction history saved in JSON format
+- **Terminal Bench Integration**: Evaluate agents on terminal bench tasks
+- **Dual Agent Architecture**: Green agent (evaluation manager) + White agent (task executor)
+- **Text-Based Tool Calling**: Uses JSON-wrapped tool calls (tau-bench style) instead of native OpenAI tool calling
 - **Docker Sandbox**: Isolated task execution with Docker containers
+- **Sequential Task Execution**: Evaluate multiple tasks in sequence
 - **Health Monitoring**: Built-in health checks and agent discovery
 
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.10+
 - Docker (installed and running)
-- OpenAI API key (set as `OPENAI_API_KEY` environment variable)
+- OpenAI API key (set in `.env` file)
 
 ## Installation
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-pip install -e .
+source setup_conda.sh
 ```
 
 ## Usage
 
-### Starting the White Agent Server
+### Quick Start - Launch Complete Evaluation
 
-First, set your OpenAI API key:
+Create a `.env` file in the project root:
 ```bash
-export OPENAI_API_KEY="your-api-key-here"
+OPENAI_API_KEY=your-api-key-here
 ```
 
-Then start the server:
+Then run the launcher:
 ```bash
-python -m white_agent.agent --server --port 8001
+python launcher.py
 ```
 
-The white agent expects tools in OpenAI function calling format and maintains conversation history with tool calls and results.
+This will:
+1. Start the green agent on port 9001
+2. Start the white agent on port 9002
+3. Execute the tasks defined in `launcher.py`
+4. Report results and terminate both agents
 
-### Running Terminal Bench Tasks
+### Customizing Tasks
 
-Run tasks with trajectory logging:
-```bash
-# Use default output directory (trajectories/)
-python examples/demo_real_terminalbench.py
-
-# Specify custom output directory
-python examples/demo_real_terminalbench.py --output-directory my_logs
-```
-
-Trajectories are saved to `{output_directory}/{task_name}/trajectory_{timestamp}.json` and include:
-- Initial task prompt and tool definitions
-- All agent-to-agent interactions
-- Tool execution requests and responses
-- Evaluation results
-
-### Using the Green Agent
+Edit `launcher.py` to change which tasks are evaluated:
 
 ```python
-from green_agent import GreenAgentTerminalBench
-
-# Create agent (requires white agent server running)
-agent = GreenAgentTerminalBench(
-    white_agent_url="http://localhost:8001",
-    trajectory_output_dir="trajectories"  # Optional: enable trajectory logging
-)
-
-# Load and run Terminal Bench tasks
-tasks = agent.load_terminal_bench_tasks(["hello-world"], limit=1)
-result = agent.execute_task_with_sandbox(tasks[0])
-
-print(f"Success: {result.success}")
-print(f"Score: {result.evaluation_result.score}")
+task_config = {
+    "task_ids": ["hello-world", "csv-to-parquet"],  # Add task IDs here
+    "dataset_path": "data/tasks"
+}
 ```
 
 ## Tool Calling Format
 
-Both agents use OpenAI's function calling format. Tools are defined as:
+The system uses **text-based tool calling** (tau-bench style) instead of native OpenAI function calling:
+
+### Tools are defined in OpenAI format:
 
 ```python
 {
-    "name": "execute_bash_command",
-    "description": "Execute a bash command in the task container",
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": "The bash command to execute"
-            }
-        },
-        "required": ["command"]
+    "type": "function",
+    "function": {
+        "name": "execute_bash_command",
+        "description": "Execute a bash command in the task container",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The bash command to execute"
+                }
+            },
+            "required": ["command"]
+        }
     }
 }
 ```
 
-Tool calls follow OpenAI's format with `id`, `type`, and `function` fields. Tool results are returned as JSON-RPC tool messages.
+### Agent responses use JSON tags:
+
+```
+<json>
+{"name": "execute_bash_command", "kwargs": {"command": "ls -la"}}
+</json>
+```
+
+### Tool results are sent as plain text:
+
+```
+Tool call result for execute_bash_command:
+total 12
+drwxr-xr-x 2 root root 4096 Jan 1 00:00 .
+-rw-r--r-- 1 root root  101 Nov 19 00:33 data.csv
+```
 
 ## A2A API Endpoints
 
-When running the server, the following endpoints are available:
+When running as servers, both agents expose:
 
-- `GET /` - Server status
-- `GET /health` - Health check
-- `GET /.well-known/agent-card` - Agent discovery (A2A standard)
+- `GET /.well-known/agent-card.json` - Agent discovery (A2A standard)
 - `POST /` - JSON-RPC 2.0 endpoint for A2A messages
 
 ### JSON-RPC Methods
@@ -114,6 +108,29 @@ When running the server, the following endpoints are available:
 - `message/send` - Send a message or tool results to the agent
 - `task/get` - Retrieve task by ID
 - `task/cancel` - Cancel a running task
+
+## Project Structure (simplified)
+
+```
+green-white-agent/
+├── launcher.py              # Main entry point - launches evaluation
+├── utils/                   # Shared utilities (A2A helpers, tag parsing)
+│   └── utils.py
+├── green_agent/             # Green Agent (evaluation manager)
+│   ├── agent.py                     # A2A server executor
+│   ├── terminal_bench_runner.py     # Task execution orchestrator
+│   ├── task_evaluator.py            # pytest-based task evaluation
+│   ├── sandbox_manager.py           # Docker sandbox management
+│   └── dataset_loaders/
+│       └── terminal_bench_loader.py # Load tasks from dataset
+├── white_agent/             # White Agent (Task Executor)
+│   ├── agent.py                     # Simple LLM agent with text-based tools
+│   └── __init__.py
+├── data/tasks/              # Terminal Bench task definitions
+└── results/                 # Evaluation results
+```
+
+## Docker Requirements
 
 Make sure Docker is installed and running:
 ```bash
@@ -125,87 +142,71 @@ docker ps
 sudo systemctl start docker
 ```
 
-## Project Structure
+## Configuration
 
-```
-green-white-agent/
-├── green_agent/              # Green Agent (Evaluation)
-│   ├── __init__.py
-│   ├── terminal_bench_runner.py  # Main runner with trajectory logging
-│   ├── sandbox_manager.py        # Docker sandbox isolation
-│   ├── task_evaluator.py         # Task evaluation with pytest
-│   └── dataset_loaders/
-│       └── terminal_bench_loader.py
-├── white_agent/              # White Agent (Problem Solving)
-│   ├── __init__.py
-│   ├── agent.py                 # A2A-compatible agent with OpenAI
-│   └── a2a_protocol.py          # A2A protocol models
-├── examples/                 # Example scripts
-│   ├── demo_real_terminalbench.py  # Run tasks with trajectory logging
-│   └── demo_green_agent.py
-├── tests/                    # Test suite
-└── trajectories/             # Default trajectory output directory
+### Green Agent Configuration
+
+Configure the green agent in `green_agent/terminal_bench_green_agent.toml`:
+- Agent name, description, and capabilities
+- Skills and tags for agent discovery
+
+### White Agent Model
+
+The white agent model can be configured in `white_agent/agent.py`:
+```python
+def __init__(self, model="gpt-4o"):
+    self.model = model
 ```
 
-## Testing
+### Timeout Settings
 
-### Quick Start
+The A2A client timeout is set in `utils/utils.py` (default: 600 seconds).
 
-1. Start the white agent server:
+## Architecture
+
+### Green Agent (Evaluation Manager)
+- Receives evaluation requests via A2A protocol
+- Loads Terminal Bench tasks from dataset
+- Creates Docker sandboxes for task execution
+- Sends tasks to white agent with tool definitions
+- Executes tools requested by white agent
+- Sends tool results back to white agent
+- Evaluates task completion using pytest
+- Reports results and metrics
+
+### White Agent (Task Executor)
+- Simple LLM-based agent using litellm
+- Receives tasks as plain text with embedded tool definitions
+- Responds with tool calls in JSON format within `<json>` tags
+- Receives tool results as plain text
+- Maintains conversation history per context
+
+### Text-Based Tool Calling Flow
+
+1. **Green → White**: Task description + tools (as JSON text)
+2. **White → Green**: Response with `<json>{"name": "tool", "kwargs": {...}}</json>`
+3. **Green executes tool** in Docker container
+4. **Green → White**: `"Tool call result for {tool}:\n{output}"`
+5. Repeat until task complete or max iterations reached
+
+## Troubleshooting
+
+### Timeout Errors
+If tasks take longer than 10 minutes, increase the timeout in `utils/utils.py`.
+
+### Docker Container Issues
 ```bash
-export OPENAI_API_KEY="your-api-key"
-python -m white_agent.agent --server --port 8001
-```
-
-2. Run Terminal Bench tasks (in another terminal):
-```bash
-python examples/demo_real_terminalbench.py
-```
-
-3. View trajectories:
-```bash
-cat trajectories/hello-world/trajectory_*.json
-```
-
-### Docker Monitoring
-
-```bash
-# Watch Docker containers
+# List running containers
 docker ps
 
-# View container logs
-docker logs <container_name>
+# Stop specific container
+docker stop <container_name>
 
-# Clean up Docker resources
-docker system prune -a
+# Clean up all stopped containers
+docker container prune
 ```
 
-## Trajectory Format
-
-Each trajectory file contains:
-
-```json
-{
-  "task_id": "hello-world",
-  "task": { ... },
-  "start_time": "2025-12-03T04:09:17.641333+00:00",
-  "interactions": [
-    {
-      "iteration": 1,
-      "timestamp": "...",
-      "user": {
-        "type": "initial_task",
-        "rpc_request": { ... }
-      },
-      "assistant": { ... },
-      "tool_executions": [ ... ]
-    }
-  ],
-  "evaluation": {
-    "passed": true,
-    "score": 1.0
-  },
-  "end_time": "...",
-  "execution_time": 12.34
-}
-```
+### A2A Connection Issues
+- Verify both agents are running (check ports 9001 and 9002)
+- Check `.env` file has valid `OPENAI_API_KEY`
+- Check firewall allows localhost connections
