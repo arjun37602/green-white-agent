@@ -200,13 +200,17 @@ class GreenAgentTerminalBench:
             )
             execution_time = time.time() - start_time
             
+            stdout_output = exec_result.output.decode('utf-8', errors='replace') if exec_result.output else ""
+            
             return {
                 "success": exec_result.exit_code == 0,
                 "command": command,
-                "stdout": exec_result.output.decode('utf-8', errors='replace') if exec_result.output else "",
+                "stdout": stdout_output,
                 "stderr": "",  # Docker exec_run combines stdout and stderr
                 "returncode": exec_result.exit_code,
-                "execution_time": execution_time
+                "execution_time": execution_time,
+                # Include error message when command fails
+                "error": stdout_output if exec_result.exit_code != 0 else None
             }
         except Exception as e:
             return {
@@ -373,8 +377,13 @@ class GreenAgentTerminalBench:
                         else:
                             self.logger.info(f"Tool result: SUCCESS (no output)")
                     else:
+                        # Show both error and stdout for failed commands
                         error = tool_result.get('error', 'Unknown error')
-                        self.logger.error(f"Tool result: FAILED - {error}")
+                        stdout = tool_result.get('stdout', '').strip()
+                        if stdout:
+                            self.logger.error(f"Tool result: FAILED (exit code {tool_result.get('returncode', '?')})\nOutput:\n{stdout}")
+                        else:
+                            self.logger.error(f"Tool result: FAILED - {error}")
                     
                     # Check if it's the stop tool
                     if tool_name == "stop":

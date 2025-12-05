@@ -79,7 +79,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             "messages": messages,
         }
         
-        if self.model != "gpt-5":
+        if "gpt-5" not in self.model:
             api_params["temperature"] = 0.0
         
         response = completion(**api_params)
