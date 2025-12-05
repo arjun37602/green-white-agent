@@ -34,7 +34,7 @@ async def launch_evaluation():
     # send the task description
     print("Sending task description to green agent...")
     task_config = {
-        "task_ids": ["csv-to-parquet"], #only using hello world right now
+        "task_ids": ["hello-world"],
         "dataset_path": "data/tasks"
     }
     task_text = f"""
