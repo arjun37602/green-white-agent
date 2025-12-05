@@ -2,28 +2,47 @@
 """
 Green Agent: Terminal Bench Task Runner and Evaluator
 Loads Terminal Bench tasks and sends them to the white agent for evaluation.
-Enhanced with sandbox management and comprehensive evaluation.
+Uses Terminal Bench's official Docker and container management.
 """
 
 import json
 import logging
 import os
-import requests
 import sys
 import time
-import subprocess
+
+# Suppress verbose a2a logging
+logging.getLogger("a2a.client.card_resolver").setLevel(logging.WARNING)
+import uuid
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from .sandbox_manager import SandboxManager, CommandResult, SandboxState
+from terminal_bench.terminal.docker_compose_manager import DockerComposeManager
+from terminal_bench.handlers.trial_handler import Task, TaskPaths
+from docker.models.containers import Container
+
 from .task_evaluator import TaskEvaluator, EvaluationResult
-from .dataset_loaders.terminal_bench_loader import TerminalBenchTaskLoader, TerminalBenchTask
-from .attempt_store import AttemptStore
+from .dataset_loaders.terminal_bench_loader import TerminalBenchTaskLoader
+
+# A2A imports for proper message handling
+from utils import send_message
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CommandResult:
+    """Result of a command execution."""
+    command: str
+    stdout: str
+    stderr: str
+    returncode: int
+    execution_time: float
+    timestamp: str
+    success: bool
 
 
 @dataclass
@@ -32,7 +51,6 @@ class TaskExecutionResult:
     task_id: str
     success: bool
     execution_time: float
-    commands_executed: int
     evaluation_result: EvaluationResult
     sandbox_id: str
     white_agent_response: Dict[str, Any]
@@ -42,34 +60,40 @@ class TaskExecutionResult:
 class GreenAgentTerminalBench:
     """Green agent for running Terminal Bench tasks against the white agent."""
     
-    # Tool definitions (MCP format)
+    # Tool definitions 
     TOOLS = [
         {
-            "name": "execute_bash_command",
-            "description": "Execute a bash command in the task container and return the output",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The bash command to execute"
-                    }
-                },
-                "required": ["command"]
+            "type": "function",
+            "function": {
+                "name": "execute_bash_command",
+                "description": "Execute a bash command in the task container and return the output",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The bash command to execute"
+                        }
+                    },
+                    "required": ["command"]
+                }
             }
         },
         {
-            "name": "stop",
-            "description": "Stop the agent loop and proceed to task evaluation. Call this when you believe the task is complete.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "reason": {
-                        "type": "string",
-                        "description": "Reason for stopping (optional)"
-                    }
-                },
-                "required": []
+            "type": "function",
+            "function": {
+                "name": "stop",
+                "description": "Stop the agent loop and proceed to task evaluation. Call this when you believe the task is complete.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "description": "Reason for stopping (optional)"
+                        }
+                    },
+                    "required": []
+                }
             }
         }
     ]
@@ -77,25 +101,13 @@ class GreenAgentTerminalBench:
     def __init__(self, white_agent_url: str = "http://localhost:8002", 
                  sandbox_base_path: Optional[str] = None,
                  terminal_bench_dataset_path: Optional[str] = None,
-                 attempt_store_path: Optional[str] = None,
-                 model_id: str = "default_model",
-                 trajectory_output_dir: Optional[str] = None):
+                 model_id: str = "default_model"):
         self.white_agent_url = white_agent_url
         self.model_id = model_id
         self.logger = logging.getLogger(__name__)
         
-        # Initialize trajectory output directory
-        self.trajectory_output_dir = trajectory_output_dir
-        if self.trajectory_output_dir:
-            os.makedirs(self.trajectory_output_dir, exist_ok=True)
-            self.logger.info(f"Trajectory output directory: {self.trajectory_output_dir}")
-        
-        # Initialize attempt store
-        self.attempt_store = AttemptStore(store_path=attempt_store_path or "./evaluation_results")
-        
-        # Initialize Docker-based sandbox manager
-        self.sandbox_manager = SandboxManager(base_path=sandbox_base_path)
-        self.task_evaluator = TaskEvaluator(attempt_store=self.attempt_store)
+        # Initialize task evaluator
+        self.task_evaluator = TaskEvaluator()
         
         # Initialize Terminal-Bench loader if dataset path provided
         self.tb_loader = None
@@ -105,25 +117,25 @@ class GreenAgentTerminalBench:
                 self.logger.info(f"Terminal-Bench dataset loaded from: {terminal_bench_dataset_path}")
             except Exception as e:
                 self.logger.warning(f"Failed to load Terminal-Bench dataset: {e}")
-                self.tb_loader = None
+                raise e
         
         # Task execution tracking
         self.active_tasks: Dict[str, Dict[str, Any]] = {}
         self.execution_history: List[TaskExecutionResult] = []
         
-        # Current sandbox ID for tool execution
-        self.current_sandbox_id: Optional[str] = None
+        # Current container for tool execution
+        self.current_container: Optional[Container] = None
+        self.current_container_manager: Optional[DockerComposeManager] = None
     
-    def load_terminal_bench_tasks(self, task_ids: List[str] = None, limit: int = None) -> List[Dict[str, Any]]:
+    def load_terminal_bench_tasks(self, task_ids: List[str] = None) -> List[Tuple[Task, TaskPaths]]:
         """
-        Load Terminal Bench tasks from Terminal-Bench dataset ONLY.
+        Load Terminal Bench tasks from Terminal-Bench dataset.
         
         Args:
             task_ids: Specific task IDs to load (None = load all)
-            limit: Maximum number of tasks to load
             
         Returns:
-            List of task dictionaries
+            List of (Task, TaskPaths) tuples from Terminal Bench
             
         Raises:
             RuntimeError: If Terminal-Bench dataset is not available
@@ -134,15 +146,9 @@ class GreenAgentTerminalBench:
                 "Please provide a valid terminal_bench_dataset_path when creating the GreenAgent."
             )
         
-        # Load from Terminal-Bench dataset
+        # Load from Terminal-Bench dataset - returns (Task, TaskPaths) tuples
         self.logger.info("Loading tasks from Terminal-Bench dataset")
-        tb_tasks = self.tb_loader.load_tasks_from_dataset(task_ids, limit)
-        
-        # Convert to internal format
-        tasks = []
-        for tb_task in tb_tasks:
-            task_dict = self.tb_loader.convert_to_internal_format(tb_task)
-            tasks.append(task_dict)
+        tasks = self.tb_loader.load_tasks_from_dataset(task_ids)
         
         self.logger.info(f"Loaded {len(tasks)} tasks from Terminal-Bench dataset")
         return tasks
@@ -163,6 +169,7 @@ class GreenAgentTerminalBench:
         elif tool_name == "stop":
             return self._stop_tool(arguments)
         else:
+            self.logger.warning(f"Unknown tool: {tool_name}")
             return {
                 "success": False,
                 "error": f"Unknown tool: {tool_name}"
@@ -170,10 +177,10 @@ class GreenAgentTerminalBench:
     
     def _execute_bash_command_tool(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Execute bash command tool."""
-        if not self.current_sandbox_id:
+        if not self.current_container:
             return {
                 "success": False,
-                "error": "No active sandbox"
+                "error": "No active container"
             }
         
         command = arguments.get("command", "")
@@ -186,14 +193,20 @@ class GreenAgentTerminalBench:
         self.logger.info(f"Tool: execute_bash_command - {command}")
         
         try:
-            result = self.sandbox_manager.execute_command(self.current_sandbox_id, command)
+            start_time = time.time()
+            exec_result = self.current_container.exec_run(
+                ["bash", "-c", command],
+                workdir="/app"
+            )
+            execution_time = time.time() - start_time
+            
             return {
-                "success": result.success,
-                "command": result.command,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "returncode": result.returncode,
-                "execution_time": result.execution_time
+                "success": exec_result.exit_code == 0,
+                "command": command,
+                "stdout": exec_result.output.decode('utf-8', errors='replace') if exec_result.output else "",
+                "stderr": "",  # Docker exec_run combines stdout and stderr
+                "returncode": exec_result.exit_code,
+                "execution_time": execution_time
             }
         except Exception as e:
             return {
@@ -212,62 +225,70 @@ class GreenAgentTerminalBench:
         }
 
     
-    def execute_task_with_sandbox(self, task: Dict[str, Any]) -> TaskExecutionResult:
+    async def execute_task_with_sandbox(self, task: Task, task_paths: TaskPaths, output_directory: Path) -> TaskExecutionResult:
         """
         Execute a complete task lifecycle with sandbox isolation.
         
         Args:
-            task: Task specification
+            task: Terminal Bench Task object
+            task_paths: Terminal Bench TaskPaths object
             
         Returns:
             TaskExecutionResult with complete execution details
         """
-        task_id = task['id']
+        task_id = task_paths.input_path.name
         start_time = time.time()
         
         # Initialize trajectory logging for this task
         trajectory_data = {
             "task_id": task_id,
-            "task": task,
+            "task": {
+                "instruction": task.instruction,
+                "difficulty": task.difficulty.value,
+                "category": task.category,
+            },
             "start_time": datetime.now(timezone.utc).isoformat(),
             "interactions": []
         }
         
-        # Add model_id to task spec for recording
-        if 'metadata' not in task:
-            task['metadata'] = {}
-        task['metadata']['model_id'] = self.model_id
-        task['metadata']['attempt_id'] = task.get('attempt_id', 0)
-        
         self.logger.info(f"Starting task execution: {task_id} (model: {self.model_id})")
         
+        # Container names
+        container_name = f"tbench_{task_id.replace('-', '_')}_{int(time.time())}_client"
+        image_name = f"tbench_{task_id.replace('-', '_')}_image"
+        
+        sessions_logs_path = output_directory / "sessions"
+        agent_logs_path = output_directory / "agent-logs"
+        sessions_logs_path.mkdir(parents=True, exist_ok=True)
+        agent_logs_path.mkdir(parents=True, exist_ok=True)
+        
+        # Create Docker Compose Manager with log paths to satisfy environment variables
+        container_manager = DockerComposeManager(
+            client_container_name=container_name,
+            client_image_name=image_name,
+            docker_compose_path=task_paths.docker_compose_path,
+            docker_image_name_prefix=f"tbench_{task_id}",
+            no_rebuild=False,
+            cleanup=True,
+            sessions_logs_path=sessions_logs_path,
+            agent_logs_path=agent_logs_path
+        )
+        
         try:
-            # Create sandbox environment with Docker support
-            environment_spec = task['environment']
+            # Start container
+            self.logger.info(f"Starting Docker container for task {task_id}")
+            container = container_manager.start()
+            self.logger.info(f"Container started: {container.name}")
             
-            # Add Docker-related paths from metadata if available
-            if 'metadata' in task:
-                metadata = task['metadata']
-                if 'dockerfile_path' in metadata:
-                    environment_spec['dockerfile_path'] = metadata['dockerfile_path']
-                if 'docker_compose_path' in metadata:
-                    environment_spec['docker_compose_path'] = metadata['docker_compose_path']
-                if 'task_path' in metadata:
-                    environment_spec['task_path'] = metadata['task_path']
-                if 'run_tests_script_path' in metadata:
-                    environment_spec['run_tests_script_path'] = metadata['run_tests_script_path']
-            
-            sandbox_id = self.sandbox_manager.create_sandbox(task_id, environment_spec)
-            self.logger.info(f"Created sandbox: {sandbox_id}")
-            
-            # Set current sandbox for tool execution
-            self.current_sandbox_id = sandbox_id
+            # Set current container for tool execution
+            self.current_container = container
+            self.current_container_manager = container_manager
             
             # Iteratively call white agent until task complete or max iterations reached
-            command_history = []
             max_iterations = 50
             iteration = 0
             should_stop = False
+            context_id = None  # Track context ID for conversation
             
             self.logger.info(f"Starting agent loop (max {max_iterations} iterations)")
             
@@ -283,7 +304,10 @@ class GreenAgentTerminalBench:
                     if iteration == 1:
                         # First iteration: send initial task with tool definitions
                         self.logger.info("Sending initial task with tool definitions")
-                        white_agent_response, interaction = self.send_initial_task(task)
+                        white_agent_response, interaction = await self.send_initial_task(task, task_paths)
+                        # Extract context_id from response
+                        if "result" in white_agent_response and "context_id" in white_agent_response["result"]:
+                            context_id = white_agent_response["result"]["context_id"]
                         trajectory_data["interactions"].append(interaction) #add initial task
                     else:
                         # Subsequent iterations: send tool results or error
@@ -299,12 +323,14 @@ class GreenAgentTerminalBench:
                                 }
                             }
                             trajectory_data["interactions"].append(interaction) #add error
-                            white_agent_response = self.send_tool_results(
-                                task, error_message="You must send a tool command"
+                            white_agent_response = await self.send_tool_results(
+                                task, task_paths, error_message="You must send a tool command", context_id=context_id
                             )
                         else:
                             # Send tool results from previous iteration
-                            white_agent_response = self.send_tool_results(task, tool_results=previous_tool_results)
+                            white_agent_response = await self.send_tool_results(
+                                task, task_paths, tool_results=previous_tool_results, context_id=context_id
+                            )
                     
                     # Log white agent response
                     interaction = {
@@ -339,23 +365,22 @@ class GreenAgentTerminalBench:
                     # Execute the tool
                     tool_result = self.execute_tool(tool_name, tool_arguments)
                     
+                    # Log the tool result
+                    if tool_result.get('success'):
+                        output = tool_result.get('stdout', '').strip()
+                        if output:
+                            self.logger.info(f"Tool result: SUCCESS\n{output}{'...' if len(output) > 200 else ''}")
+                        else:
+                            self.logger.info(f"Tool result: SUCCESS (no output)")
+                    else:
+                        error = tool_result.get('error', 'Unknown error')
+                        self.logger.error(f"Tool result: FAILED - {error}")
+                    
                     # Check if it's the stop tool
                     if tool_name == "stop":
                         should_stop = True
                     
-                    # Record command if it was execute_bash_command
-                    if tool_name == "execute_bash_command" and tool_result.get("success"):
-                        command_result = CommandResult(
-                            command=tool_result["command"],
-                            stdout=tool_result["stdout"],
-                            stderr=tool_result["stderr"],
-                            returncode=tool_result["returncode"],
-                            execution_time=tool_result["execution_time"],
-                            timestamp=datetime.now(timezone.utc).isoformat(),
-                            success=tool_result["returncode"] == 0
-                        )
-                        command_history.append(command_result)
-                    
+
                     # Store tool result
                     iteration_tool_results.append({
                         "tool_call_id": tool_call_id,
@@ -380,13 +405,11 @@ class GreenAgentTerminalBench:
             if iteration >= max_iterations:
                 self.logger.warning(f"Reached max iterations ({max_iterations}) without completion")
             
-            self.logger.info(f"Total commands executed: {len(command_history)}")
             self.logger.info(f"Starting task evaluation...")
             
             try:
                 evaluation_result = self.task_evaluator.evaluate(
-                    task_id, task, command_history, 
-                    self.sandbox_manager, sandbox_id, white_agent_response
+                    task_id, task_paths, container, white_agent_response
                 )
                 self.logger.info(f"Evaluation complete: {evaluation_result.passed if evaluation_result else 'N/A'}")
                 
@@ -406,17 +429,13 @@ class GreenAgentTerminalBench:
                     "error": str(e)
                 }
             
-            # Save trajectory to file
-            if self.trajectory_output_dir:
-                self._save_trajectory(task_id, trajectory_data)
-            
-            # Clean up sandbox
-            self.logger.info(f"Cleaning up sandbox {sandbox_id}...")
+            # Clean up container
+            self.logger.info(f"Cleaning up container...")
             try:
-                self.sandbox_manager.destroy_sandbox(sandbox_id)
-                self.logger.info(f"Sandbox cleaned up")
+                container_manager.stop()
+                self.logger.info(f"Container cleaned up")
             except Exception as e:
-                self.logger.warning(f"Error cleaning up sandbox: {e}")
+                self.logger.warning(f"Error cleaning up container: {e}")
             
             execution_time = time.time() - start_time
             trajectory_data["end_time"] = datetime.now(timezone.utc).isoformat()
@@ -427,9 +446,8 @@ class GreenAgentTerminalBench:
                 task_id=task_id,
                 success=evaluation_result.passed,
                 execution_time=execution_time,
-                commands_executed=len(command_history),
                 evaluation_result=evaluation_result,
-                sandbox_id=sandbox_id,
+                sandbox_id=container.name,
                 white_agent_response=white_agent_response,
                 timestamp=datetime.now(timezone.utc).isoformat()
             )
@@ -447,13 +465,12 @@ class GreenAgentTerminalBench:
             trajectory_data["error"] = str(e)
             trajectory_data["end_time"] = datetime.now(timezone.utc).isoformat()
             
-            # Save trajectory even on error
-            if self.trajectory_output_dir:
-                self._save_trajectory(task_id, trajectory_data)
-            
-            # Clean up sandbox on error
-            if 'sandbox_id' in locals():
-                self.sandbox_manager.destroy_sandbox(sandbox_id)
+            # Clean up container on error
+            if 'container_manager' in locals():
+                try:
+                    container_manager.stop()
+                except:
+                    pass
             
             # Create failed result
             execution_time = time.time() - start_time
@@ -461,12 +478,15 @@ class GreenAgentTerminalBench:
                 task_id=task_id,
                 success=False,
                 execution_time=execution_time,
-                commands_executed=0,
                 evaluation_result=None,
-                sandbox_id=sandbox_id if 'sandbox_id' in locals() else None,
+                sandbox_id=container.name if 'container' in locals() else None,
                 white_agent_response={"error": str(e)},
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=datetime.now(timezone.utc).isoformat()
             )
+        finally:
+            # Clear container references
+            self.current_container = None
+            self.current_container_manager = None
     
     def _extract_tool_calls(self, white_agent_response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -539,42 +559,14 @@ class GreenAgentTerminalBench:
         
         return tool_calls
     
-    def _save_trajectory(self, task_id: str, trajectory_data: Dict[str, Any]) -> None:
+    
+    async def send_initial_task(self, task: Task, task_paths: TaskPaths) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
-        Save trajectory data to a JSON file.
+        Send initial task with tool definitions to the white agent using A2A SDK.
         
         Args:
-            task_id: The task identifier
-            trajectory_data: Complete trajectory data including interactions
-        """
-        try:
-            # Create task-specific directory
-            task_dir = Path(self.trajectory_output_dir) / task_id
-            task_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Generate timestamp for filename
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            trajectory_file = task_dir / f"trajectory_{timestamp}.json"
-            
-            # Write trajectory data to file
-            with open(trajectory_file, 'w') as f:
-                json.dump(trajectory_data, f, indent=2, default=str)
-            
-            self.logger.info(f"Trajectory saved to: {trajectory_file}")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to save trajectory: {e}")
-            import traceback
-            self.logger.debug(traceback.format_exc())
-    
-    
-    def send_initial_task(self, task: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """
-        Send initial task with tool definitions to the white agent.
-        
-        Args:
-            task: Task specification
-            iteration: Current iteration number
+            task: Terminal Bench Task object
+            task_paths: Terminal Bench TaskPaths object
             
         Returns:
             Tuple of (white agent response, interaction dict with logged request)
@@ -586,203 +578,272 @@ class GreenAgentTerminalBench:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
-            # Build initial task message
-            task_message = f"""Terminal Bench Task: {task.get('id')}
+            # Build initial task message with tools in prompt (text-based, not native tool calling)
+            task_id = task_paths.input_path.name
+            tools_description = json.dumps(self.TOOLS, indent=2)
+            task_message = f"""Terminal Bench Task: {task_id}
 
-Description: {task.get('description', 'No description')}
+Description: {task.category} task
 
 Instructions:
-{task.get('instruction', '')}
+You are a terminal agent that can execute bash commands.
+{task.instruction}
 
 Environment:
-{json.dumps(task.get('environment', {}), indent=2)}
+Working Directory: /app
+
+You have access to the following tools:
+{tools_description}
+
+Please respond in JSON format. Wrap your response in <json>...</json> tags.
+The JSON should contain:
+- "name": the tool name (e.g., "execute_bash_command" or "stop")
+- "kwargs": object with the tool arguments
+
+Example response format:
+<json>
+{{"name": "execute_bash_command", "kwargs": {{"command": "ls -la"}}}}
+</json>
 
 Complete this task using the available tools."""
             
-            # Create A2A message with tool definitions
-            rpc_request = {
-                "jsonrpc": "2.0",
-                "id": f"task-{task.get('id', 'unknown')}-init",
-                "method": "message/send",
-                "params": {
-                    "message": {
-                        "role": "user",
-                        "parts": [
-                            {
-                                "kind": "text",
-                                "text": task_message
-                            }
-                        ]
-                    },
-                    "tools": self.TOOLS  # Include tool definitions
-                }
-            }
-            
-            # Log the request to interaction
-            interaction["user"] = {
-                "type": "initial_task",
-                "rpc_request": rpc_request
-            }
-            
-            # Debug: log the request
+            # Log the request
             self.logger.info(f"=== SENDING TO WHITE AGENT (INITIAL TASK) ===")
             self.logger.info(f"URL: {self.white_agent_url}")
             self.logger.info(f"Tools provided: {len(self.TOOLS)} tools")
-            self.logger.debug(f"Tools: {json.dumps(self.TOOLS, indent=2)}")
+            self.logger.debug(f"Tools: {tools_description}")
             self.logger.info(f"Message preview: {task_message[:200]}...")
             
-            # Send to white agent
-            response = requests.post(self.white_agent_url, json=rpc_request, timeout=120)
+            # Send using A2A SDK (no tools parameter - all in text)
+            response = await send_message(
+                self.white_agent_url,
+                task_message,
+                context_id=None
+            )
             
-            if response.status_code == 200:
-                result = response.json()
-                self.logger.debug(f"White agent initial response: {json.dumps(result, indent=2)}")
+            # Convert response to dict for compatibility with existing code
+            from a2a.types import SendMessageSuccessResponse, Message
+            from utils import parse_tags
+            res_root = response.root
+            if isinstance(res_root, SendMessageSuccessResponse):
+                # Extract the assistant's response text
+                assistant_text = self._extract_text_from_message(res_root.result) if isinstance(res_root.result, Message) else ""
+                
+                # Parse tool calls from <json>...</json> tags (tau-bench format)
+                tool_calls_list = []
+                try:
+                    tags = parse_tags(assistant_text)
+                    if "json" in tags:
+                        json_content = tags["json"].strip()
+                        self.logger.info(f"Parsing JSON content: {json_content}")
+                        
+                        # Try to parse the JSON, if it fails due to extra closing braces, strip them
+                        try:
+                            response_data = json.loads(json_content)
+                        except json.JSONDecodeError as e:
+                            # Check if it's an "Extra data" error and try stripping trailing braces
+                            if "Extra data" in str(e):
+                                # Remove trailing } characters one by one until valid JSON
+                                cleaned = json_content.rstrip()
+                                while cleaned.endswith('}') and len(cleaned) > 0:
+                                    try:
+                                        response_data = json.loads(cleaned)
+                                        self.logger.info(f"Successfully parsed after removing extra braces")
+                                        break
+                                    except json.JSONDecodeError:
+                                        cleaned = cleaned[:-1].rstrip()
+                                else:
+                                    raise e
+                            else:
+                                raise
+                        
+                        if isinstance(response_data, dict):
+                            # Tau-bench format: {"name": "tool_name", "kwargs": {...}}
+                            if "name" in response_data and "kwargs" in response_data:
+                                tool_calls_list = [{
+                                    "name": response_data["name"],
+                                    "arguments": response_data["kwargs"]
+                                }]
+                            # Also support array format for backwards compatibility
+                            elif "tool_calls" in response_data:
+                                tool_calls_list = response_data["tool_calls"]
+                except (json.JSONDecodeError, KeyError) as e:
+                    self.logger.warning(f"Failed to parse JSON from response: {e}")
+                    self.logger.info(f"Raw assistant response: {assistant_text}")
+                
+                # Build the result in a format compatible with existing code
+                result = {
+                    "jsonrpc": "2.0",
+                    "id": res_root.id,
+                    "result": {
+                        "message": res_root.result.model_dump() if isinstance(res_root.result, Message) else res_root.result,
+                        "context_id": res_root.result.context_id if isinstance(res_root.result, Message) else None,
+                        # Include tool_calls in history for extraction
+                        "history": [{"role": "assistant", "content": assistant_text, "tool_calls": tool_calls_list}],
+                        "artifacts": []
+                    }
+                }
+                
+                # Log the request to interaction
+                interaction["user"] = {
+                    "type": "initial_task",
+                    "message": task_message,
+                    "tools": self.TOOLS
+                }
+                
+                self.logger.debug(f"White agent initial response received")
                 return result, interaction
             else:
-                self.logger.error(f"White agent returned status {response.status_code}: {response.text}")
-                raise Exception(f"White agent error: {response.status_code}")
+                error_msg = f"Unexpected response type from white agent: {type(res_root)}"
+                self.logger.error(error_msg)
+                raise Exception(error_msg)
                 
         except Exception as e:
             self.logger.error(f"Failed to send initial task to white agent: {e}")
             raise
     
-    def send_tool_results(self, task: Dict[str, Any], 
+    def _extract_text_from_message(self, message) -> str:
+        """Extract text content from an A2A message."""
+        if hasattr(message, 'parts'):
+            from a2a.utils import get_text_parts
+            text_parts = get_text_parts(message.parts)
+            return "\n".join(text_parts) if text_parts else ""
+        return str(message)
+    
+    async def send_tool_results(self, task: Task, task_paths: TaskPaths,
                          tool_results: Optional[List[Dict[str, Any]]] = None,
-                         error_message: Optional[str] = None) -> Dict[str, Any]:
+                         error_message: Optional[str] = None,
+                         context_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Send tool results or error message to the white agent.
+        Send tool results or error message to the white agent using plain text format.
         
         Args:
-            task: Task specification
+            task: Terminal Bench Task object
+            task_paths: Terminal Bench TaskPaths object
             tool_results: Tool execution results from previous iteration
             error_message: Error message if white agent didn't send tool calls
+            context_id: Context ID to maintain conversation
             
         Returns:
             White agent response
         """
         try:
-            # Build message based on input
+            # Build message based on input - simple plain text like tau-bench
             if error_message:
-                # Send error message as user
-                rpc_request = {
-                    "jsonrpc": "2.0",
-                    "id": f"task-{task.get('id', 'unknown')}-error",
-                    "method": "message/send",
-                    "params": {
-                        "message": {
-                            "role": "user",
-                            "parts": [{"kind": "text", "text": error_message}]
-                        },
-                        "tools": self.TOOLS
-                    }
-                }
+                message_text = f"Error: {error_message}"
             elif tool_results:
-                # Send tool results in OpenAI format
-                # Convert to OpenAI tool message format
-                tool_messages = []
+                # Simple text format - just send the tool results
+                results_text = []
                 for tr in tool_results:
-                    tool_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tr['tool_call_id'],
-                        "content": json.dumps(tr['result'])
-                    })
-                
-                rpc_request = {
-                    "jsonrpc": "2.0",
-                    "id": f"task-{task.get('id', 'unknown')}-tool-results",
-                    "method": "message/send",
-                    "params": {
-                        "tool_messages": tool_messages,  # Send as structured data
-                        "tools": self.TOOLS
-                    }
-                }
+                    tool_name = tr.get('tool_name', 'unknown')
+                    result = tr.get('result', {})
+                    if result.get('success'):
+                        output = result.get('stdout', '').strip()
+                        results_text.append(f"Tool call result for {tool_name}:\n{output}")
+                    else:
+                        error = result.get('error', 'Unknown error').strip()
+                        results_text.append(f"Tool call result for {tool_name}:\nError: {error}")
+                message_text = "\n\n".join(results_text)
+                self.logger.debug(f"Sending {len(tool_results)} tool results in plain text")
             else:
                 raise ValueError("Must provide either tool_results or error_message")
             
-            # Send to white agent
-            response = requests.post(self.white_agent_url, json=rpc_request, timeout=120)
+            # Send using A2A SDK
+            response = await send_message(
+                self.white_agent_url,
+                message_text,
+                context_id=context_id
+            )
             
-            if response.status_code == 200:
-                result = response.json()
-                self.logger.debug(f"White agent follow-up response: {json.dumps(result, indent=2)}")
+            # Convert response to dict for compatibility
+            from a2a.types import SendMessageSuccessResponse, Message
+            from utils import parse_tags
+            res_root = response.root
+            if isinstance(res_root, SendMessageSuccessResponse):
+                # Extract the assistant's response text
+                assistant_text = self._extract_text_from_message(res_root.result) if isinstance(res_root.result, Message) else ""
+                
+                # Parse tool calls from <json>...</json> tags (tau-bench format)
+                tool_calls_list = []
+                try:
+                    tags = parse_tags(assistant_text)
+                    if "json" in tags:
+                        json_content = tags["json"].strip()
+                        self.logger.info(f"Parsing JSON content: {json_content}")
+                        
+                        # Try to parse the JSON, if it fails due to extra closing braces, strip them
+                        try:
+                            response_data = json.loads(json_content)
+                        except json.JSONDecodeError as e:
+                            # Check if it's an "Extra data" error and try stripping trailing braces
+                            if "Extra data" in str(e):
+                                # Remove trailing } characters one by one until valid JSON
+                                cleaned = json_content.rstrip()
+                                while cleaned.endswith('}') and len(cleaned) > 0:
+                                    try:
+                                        response_data = json.loads(cleaned)
+                                        self.logger.info(f"Successfully parsed after removing extra braces")
+                                        break
+                                    except json.JSONDecodeError:
+                                        cleaned = cleaned[:-1].rstrip()
+                                else:
+                                    raise e
+                            else:
+                                raise
+                        
+                        if isinstance(response_data, dict):
+                            # Tau-bench format: {"name": "tool_name", "kwargs": {...}}
+                            if "name" in response_data and "kwargs" in response_data:
+                                tool_calls_list = [{
+                                    "name": response_data["name"],
+                                    "arguments": response_data["kwargs"]
+                                }]
+                            # Also support array format for backwards compatibility
+                            elif "tool_calls" in response_data:
+                                tool_calls_list = response_data["tool_calls"]
+                except (json.JSONDecodeError, KeyError) as e:
+                    self.logger.warning(f"Failed to parse JSON from response: {e}")
+                    self.logger.info(f"Raw assistant response: {assistant_text}")
+                
+                result = {
+                    "jsonrpc": "2.0",
+                    "id": res_root.id,
+                    "result": {
+                        "message": res_root.result.model_dump() if isinstance(res_root.result, Message) else res_root.result,
+                        "context_id": res_root.result.context_id if isinstance(res_root.result, Message) else context_id,
+                        "history": [{"role": "assistant", "content": assistant_text, "tool_calls": tool_calls_list}],
+                        "artifacts": []
+                    }
+                }
+                
+                self.logger.debug(f"White agent follow-up response received")
                 return result
             else:
-                self.logger.error(f"White agent returned status {response.status_code}: {response.text}")
-                raise Exception(f"White agent error: {response.status_code}")
+                error_msg = f"Unexpected response type from white agent: {type(res_root)}"
+                self.logger.error(error_msg)
+                raise Exception(error_msg)
                 
         except Exception as e:
             self.logger.error(f"Failed to send tool results to white agent: {e}")
             raise
-    
-    def run_evaluation(self, task_ids: List[str] = None, limit: int = 5):
-        """
-        Run full evaluation loop with sandbox-based execution and Terminal-Bench pytest evaluation.
-        
-        Args:
-            task_ids: Specific task IDs to run
-            limit: Maximum number of tasks
-        """
-        self.logger.info("Starting Terminal Bench evaluation")
-        
-        # Load tasks from Terminal-Bench dataset
-        tasks = self.load_terminal_bench_tasks(task_ids, limit)
-        self.logger.info(f"Loaded {len(tasks)} tasks")
-        
-        results = []
-        
-        for i, task in enumerate(tasks, 1):
-            task_id = task.get('id', f'task_{i}')
-            self.logger.info(f"\n{'='*60}")
-            self.logger.info(f"📝 Task {i}/{len(tasks)}: {task_id}")
-            self.logger.info(f"{'='*60}")
-            
-            # Execute task with sandbox isolation and Terminal-Bench pytest evaluation
-            execution_result = self.execute_task_with_sandbox(task)
-            
-            result = {
-                "task_id": task_id,
-                "success": execution_result.success,
-                "execution_time": execution_result.execution_time,
-                "commands_executed": execution_result.commands_executed,
-                "evaluation_score": execution_result.evaluation_result.score if execution_result.evaluation_result else 0.0,
-                "sandbox_id": execution_result.sandbox_id,
-                "white_agent_response": execution_result.white_agent_response,
-                "evaluation_details": execution_result.evaluation_result.details if execution_result.evaluation_result else {},
-                "timestamp": execution_result.timestamp
-            }
-            
-            results.append(result)
-            
-            status = "PASSED" if result["success"] else "FAILED"
-            score = result["evaluation_score"]
-            self.logger.info(f"{status}: {task_id} (Score: {score:.2f})")
-        
-        # Summary
-        passed = sum(1 for r in results if r["success"])
-        avg_score = sum(r["evaluation_score"] for r in results) / len(results) if results else 0.0
-        total_time = sum(r["execution_time"] for r in results)
-        total_commands = sum(r["commands_executed"] for r in results)
-        
-        self.logger.info(f"\n{'='*60}")
-        self.logger.info(f"📊 EVALUATION SUMMARY")
-        self.logger.info(f"{'='*60}")
-        self.logger.info(f"Total Tasks: {len(results)}")
-        self.logger.info(f"Passed: {passed}")
-        self.logger.info(f"Failed: {len(results) - passed}")
-        self.logger.info(f"Success Rate: {passed/len(results)*100:.1f}%")
-        self.logger.info(f"Average Score: {avg_score:.2f}")
-        self.logger.info(f"Total Execution Time: {total_time:.2f}s")
-        self.logger.info(f"Total Commands Executed: {total_commands}")
-        self.logger.info(f"Sandbox Mode: Always Enabled")
-        
-        return results
     
     def get_execution_history(self) -> List[TaskExecutionResult]:
         """Get complete execution history."""
         return self.execution_history
     
     def cleanup_resources(self):
-        """Clean up all sandbox resources."""
-        self.logger.info("Cleaning up sandbox resources...")
-        self.sandbox_manager.cleanup_all()
-        self.logger.info("Cleanup completed")
+        """Clean up Docker resources (containers, images, etc)."""
+        self.logger.info("Cleaning up Docker resources...")
+        try:
+            import docker
+            client = docker.from_env()
+            
+            # Prune containers
+            client.containers.prune()
+            
+            # Prune images (force remove unused)
+            client.images.prune(filters={"dangling": False})
+            
+            self.logger.info("Cleanup completed")
+        except Exception as e:
+            self.logger.warning(f"Error during cleanup: {e}")
