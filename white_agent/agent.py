@@ -110,8 +110,9 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
     base_url = os.getenv("AGENT_PUBLIC_URL", f"http://{host}:{port}")
     card = prepare_white_agent_card(base_url)
 
+    executor = TerminalBenchWhiteAgentExecutor(model=model)
     request_handler = DefaultRequestHandler(
-        agent_executor=TerminalBenchWhiteAgentExecutor(model=model),
+        agent_executor=executor,
         task_store=InMemoryTaskStore(),
     )
 
@@ -137,6 +138,15 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
             "version": "1.0.0"
         })
 
+    async def get_trajectories(request):
+        """Return all message histories (trajectories) from the white agent."""
+        # Access the executor's message histories
+        trajectories = executor.ctx_id_to_messages.copy()
+        return JSONResponse({
+            "trajectories": trajectories,
+            "context_ids": list(trajectories.keys())
+        })
+
     # Add the agent card routes with and without .json extension
     starlette_app.routes.append(
         Route("/.well-known/agent-card.json", get_agent_card_json, methods=["GET"])
@@ -146,6 +156,9 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
     )
     starlette_app.routes.append(
         Route("/status", get_agent_status, methods=["GET"])
+    )
+    starlette_app.routes.append(
+        Route("/trajectories", get_trajectories, methods=["GET"])
     )
 
     uvicorn.run(starlette_app, host=host, port=port)

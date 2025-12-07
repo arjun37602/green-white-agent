@@ -4,23 +4,38 @@ import multiprocessing
 import json
 import asyncio
 import argparse
+from pathlib import Path
+from datetime import datetime
+import httpx
 from green_agent import start_green_agent
 from white_agent import start_white_agent
 from utils import send_message, wait_agent_ready
 
 
-async def launch_evaluation(model="gpt-5", task_ids=None):
+async def launch_evaluation(model="gpt-5", task_ids=None, output_base_dir="results"):
     """
     Launch evaluation with configurable settings.
     
     Args:
         model: Model name to use (e.g., "gpt-5-nano", "gpt-5", "gpt-4o")
         task_ids: List of task IDs to evaluate (None = all tasks, [] = default to ["hello-world"])
+        output_base_dir: Base directory for saving results (default: "results")
     """
     # Don't override None here - let it pass through to load all tasks
     # Only set default if it's an empty list (which shouldn't happen, but be safe)
     if task_ids == []:
         task_ids = ["hello-world"]
+    
+    # Create output directory with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_safe = model.replace("/", "_").replace(":", "_")
+    task_ids_str = "_".join(task_ids[:3]) if task_ids and len(task_ids) <= 3 else f"{len(task_ids)}_tasks"
+    if task_ids is None:
+        task_ids_str = "all_tasks"
+    output_dir = Path(output_base_dir) / f"eval_{timestamp}_{model_safe}_{task_ids_str}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {output_dir}")
+    
     # start green agent
     print("Launching green agent...")
     green_address = ("localhost", 9001)
@@ -51,7 +66,8 @@ async def launch_evaluation(model="gpt-5", task_ids=None):
     # None means all tasks, list means specific tasks
     task_config = {
         "task_ids": task_ids,  # None = all tasks, list = specific tasks
-        "dataset_path": "data/tasks"
+        "dataset_path": "data/tasks",
+        "output_directory": str(output_dir)
     }
     task_text = f"""
 Your task is to evaluate the white agent located at:
@@ -70,12 +86,58 @@ You should use the following task configuration:
     print("Response from green agent:")
     print(response)
 
-    print("Evaluation complete. Terminating agents...")
+    # Fetch trajectories from white agent before terminating
+    print("\nFetching trajectories from white agent...")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            trajectories_response = await client.get(f"{white_url}/trajectories")
+            if trajectories_response.status_code == 200:
+                trajectories_data = trajectories_response.json()
+                trajectories = trajectories_data.get("trajectories", {})
+                
+                # Save trajectories to output directory
+                trajectories_file = output_dir / "trajectories.json"
+                with open(trajectories_file, "w") as f:
+                    json.dump(trajectories, f, indent=2)
+                print(f"Saved trajectories to {trajectories_file}")
+                print(f"Found {len(trajectories)} context IDs with message histories")
+            else:
+                print(f"Warning: Failed to fetch trajectories (status {trajectories_response.status_code})")
+    except Exception as e:
+        print(f"Warning: Failed to fetch trajectories: {e}")
+
+    # Save evaluation summary
+    # Convert response to dict if it has model_dump, otherwise use string representation
+    response_dict = None
+    if hasattr(response, 'model_dump'):
+        try:
+            response_dict = response.model_dump(mode='json')
+        except:
+            response_dict = str(response)
+    else:
+        response_dict = str(response)
+    
+    summary = {
+        "model": model,
+        "task_ids": task_ids,
+        "timestamp": timestamp,
+        "output_directory": str(output_dir),
+        "green_agent_url": green_url,
+        "white_agent_url": white_url,
+        "response": response_dict
+    }
+    summary_file = output_dir / "evaluation_summary.json"
+    with open(summary_file, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"Saved evaluation summary to {summary_file}")
+
+    print("\nEvaluation complete. Terminating agents...")
     p_green.terminate()
     p_green.join()
     p_white.terminate()
     p_white.join()
     print("Agents terminated.")
+    print(f"\nResults saved to: {output_dir}")
 
 
 if __name__ == "__main__":
