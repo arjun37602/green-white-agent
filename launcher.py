@@ -29,9 +29,12 @@ async def launch_evaluation(model="gpt-5", task_ids=None, output_base_dir="resul
     # Create output directory with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_safe = model.replace("/", "_").replace(":", "_")
-    task_ids_str = "_".join(task_ids[:3]) if task_ids and len(task_ids) <= 3 else f"{len(task_ids)}_tasks"
     if task_ids is None:
         task_ids_str = "all_tasks"
+    elif len(task_ids) <= 3:
+        task_ids_str = "_".join(task_ids[:3])
+    else:
+        task_ids_str = f"{len(task_ids)}_tasks"
     output_dir = Path(output_base_dir) / f"eval_{timestamp}_{model_safe}_{task_ids_str}"
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {output_dir}")
