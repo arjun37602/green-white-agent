@@ -103,13 +103,13 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         raise NotImplementedError
 
 
-def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost", port=9002):
-    print("Starting white agent...")
+def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost", port=9002, model="gpt-5"):
+    print(f"Starting white agent with model={model}...")
     url = f"http://{host}:{port}"
     card = prepare_white_agent_card(url)
 
     request_handler = DefaultRequestHandler(
-        agent_executor=TerminalBenchWhiteAgentExecutor(),
+        agent_executor=TerminalBenchWhiteAgentExecutor(model=model),
         task_store=InMemoryTaskStore(),
     )
 

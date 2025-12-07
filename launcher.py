@@ -3,12 +3,24 @@
 import multiprocessing
 import json
 import asyncio
+import argparse
 from green_agent import start_green_agent
 from white_agent import start_white_agent
 from utils import send_message, wait_agent_ready
 
 
-async def launch_evaluation():
+async def launch_evaluation(model="gpt-5", task_ids=None):
+    """
+    Launch evaluation with configurable settings.
+    
+    Args:
+        model: Model name to use (e.g., "gpt-5-nano", "gpt-5", "gpt-4o")
+        task_ids: List of task IDs to evaluate (None = all tasks, [] = default to ["hello-world"])
+    """
+    # Don't override None here - let it pass through to load all tasks
+    # Only set default if it's an empty list (which shouldn't happen, but be safe)
+    if task_ids == []:
+        task_ids = ["hello-world"]
     # start green agent
     print("Launching green agent...")
     green_address = ("localhost", 9001)
@@ -21,11 +33,13 @@ async def launch_evaluation():
     print("Green agent is ready.")
 
     # start white agent
-    print("Launching white agent...")
+    print(f"Launching white agent with model={model}...")
     white_address = ("localhost", 9002)
     white_url = f"http://{white_address[0]}:{white_address[1]}"
     p_white = multiprocessing.Process(
-        target=start_white_agent, args=("terminal_bench_white_agent", *white_address)
+        target=start_white_agent, 
+        args=("terminal_bench_white_agent", *white_address),
+        kwargs={"model": model}
     )
     p_white.start()
     assert await wait_agent_ready(white_url), "White agent not ready in time"
@@ -33,8 +47,10 @@ async def launch_evaluation():
 
     # send the task description
     print("Sending task description to green agent...")
+    # Pass None through to load all tasks, or pass the list of specific task IDs
+    # None means all tasks, list means specific tasks
     task_config = {
-        "task_ids": ["hello-world"],
+        "task_ids": task_ids,  # None = all tasks, list = specific tasks
         "dataset_path": "data/tasks"
     }
     task_text = f"""
@@ -63,5 +79,34 @@ You should use the following task configuration:
 
 
 if __name__ == "__main__":
-    asyncio.run(launch_evaluation())
+    parser = argparse.ArgumentParser(description="Launch terminal bench evaluation")
+    parser.add_argument(
+        "--model", 
+        type=str, 
+        default="gpt-5",
+        help="Model name to use (e.g., 'gpt-5-nano', 'gpt-5', 'gpt-4o'). Default: gpt-5"
+    )
+    parser.add_argument(
+        "--task-ids",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Task IDs to evaluate. Default: ['hello-world']. Use --all-tasks to evaluate all tasks."
+    )
+    parser.add_argument(
+        "--all-tasks",
+        action="store_true",
+        help="Evaluate all tasks in the dataset (overrides --task-ids)"
+    )
+    
+    args = parser.parse_args()
+    
+    # Handle --all-tasks flag
+    if args.all_tasks:
+        task_ids = None  # None means load all tasks
+        print("Will evaluate ALL tasks in the dataset")
+    else:
+        task_ids = args.task_ids if args.task_ids else ["hello-world"]
+    
+    asyncio.run(launch_evaluation(model=args.model, task_ids=task_ids))
 
