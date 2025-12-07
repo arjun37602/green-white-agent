@@ -105,8 +105,10 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 
 def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost", port=9002, model="gpt-5"):
     print(f"Starting white agent with model={model}...")
-    url = f"http://{host}:{port}"
-    card = prepare_white_agent_card(url)
+    
+    # Use public URL from environment if available (for AgentBeats/ngrok)
+    base_url = os.getenv("AGENT_PUBLIC_URL", f"http://{host}:{port}")
+    card = prepare_white_agent_card(base_url)
 
     request_handler = DefaultRequestHandler(
         agent_executor=TerminalBenchWhiteAgentExecutor(model=model),
@@ -117,5 +119,44 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
         agent_card=card,
         http_handler=request_handler,
     )
+    
+    # Build the Starlette app
+    starlette_app = app.build()
+    
+    # Add endpoints for AgentBeats compatibility
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    
+    async def get_agent_card_json(request):
+        return JSONResponse(card.model_dump(mode='json', exclude_none=True))
 
-    uvicorn.run(app.build(), host=host, port=port)
+    async def get_agent_status(request):
+        return JSONResponse({
+            "status": "healthy",
+            "agent": agent_name,
+            "version": "1.0.0"
+        })
+
+    # Add the agent card routes with and without .json extension
+    starlette_app.routes.append(
+        Route("/.well-known/agent-card.json", get_agent_card_json, methods=["GET"])
+    )
+    starlette_app.routes.append(
+        Route("/.well-known/agent-card", get_agent_card_json, methods=["GET"])
+    )
+    starlette_app.routes.append(
+        Route("/status", get_agent_status, methods=["GET"])
+    )
+
+    uvicorn.run(starlette_app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="White Agent Server")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=8001, help="Port to bind to")
+    args = parser.parse_args()
+    
+    start_white_agent(host=args.host, port=args.port)

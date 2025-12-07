@@ -55,3 +55,24 @@ sample_dir/
 # Logs
 *.log
 logs/
+
+
+/green_agent/.ab*
+/green_agent/.env*
+/green_agent/.venv*
+/green_agent/env*
+/green_agent/venv*
+/green_agent/env.local*
+/green_agent/venv.local*
+/green_agent/env.local.local*
+/green_agent/venv.local.local*
+
+/white_agent/.ab*
+/white_agent/.env*
+/white_agent/.venv*
+/white_agent/env*
+/white_agent/venv*
+/white_agent/env.local*
+/white_agent/venv.local*
+/white_agent/env.local.local*
+/white_agent/venv.local.local*
