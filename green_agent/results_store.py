@@ -28,6 +28,7 @@ class TaskResult:
 
 
 class ResultsStore:
+    """JSONL-based results storage with caching support"""
     
     def __init__(self, results_dir: str = "./results"):
         self.results_dir = Path(results_dir)

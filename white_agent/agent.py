@@ -88,23 +88,31 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         assistant_message = response.choices[0].message
         assistant_content = assistant_message.content or ""
         
+        # Track token usage
         usage = response.usage if hasattr(response, 'usage') else None
+        completion_tokens = 0
+        cumulative_tokens = 0
+        
         if usage and hasattr(usage, 'completion_tokens'):
-            tokens_this_turn = usage.total_tokens
-            self.ctx_id_to_tokens[context.context_id] += tokens_this_turn
-            self.logger.debug(f"Completion tokens : {usage.completion_tokens})")
-        else:
-            self.logger.warning(f"No completion tokens found in response")
+            completion_tokens = usage.completion_tokens
+            self.ctx_id_to_tokens[context.context_id] += usage.total_tokens
+            cumulative_tokens = self.ctx_id_to_tokens[context.context_id]
+            self.logger.debug(f"Tokens: {completion_tokens} completion, {cumulative_tokens} cumulative")
+        
         messages.append({
             "role": "assistant",
             "content": assistant_content,
-            "tokens": usage.total_tokens if usage else 0
         })
         
-        # Send response back
+        # Send response with token metadata
         await event_queue.enqueue_event(
             new_agent_text_message(
-                assistant_content, context_id=context.context_id
+                assistant_content,
+                context_id=context.context_id,
+                metadata={
+                    "completion_tokens": completion_tokens,
+                    "cumulative_tokens": cumulative_tokens
+                }
             )
         )
 
