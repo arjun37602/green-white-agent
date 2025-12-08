@@ -100,10 +100,18 @@ class GreenAgentTerminalBench:
     ]
     
     def __init__(self, white_agent_url: str = "http://localhost:8002", 
-                 sandbox_base_path: Optional[str] = None,
                  terminal_bench_dataset_path: Optional[str] = None,
                  model_id: str = "default_model",
                  results_dir: str = "./results"):
+        """
+        Initialize Terminal Bench runner.
+        
+        Args:
+            white_agent_url: URL of white agent to evaluate
+            terminal_bench_dataset_path: Path to Terminal Bench dataset
+            model_id: Model identifier for results storage
+            results_dir: Directory for JSONL results
+        """
         self.white_agent_url = white_agent_url
         self.model_id = model_id
         self.logger = logging.getLogger(__name__)
@@ -498,10 +506,6 @@ class GreenAgentTerminalBench:
                 # Try to extract from evaluation details
                 passed_test_cases = evaluation_result.details.get("passed_tests", 1 if evaluation_result.passed else 0)
                 total_test_cases = evaluation_result.details.get("total_tests", 1)
-            else:
-                # Fallback: use passed as binary
-                passed_test_cases = 1 if (evaluation_result and evaluation_result.passed) else 0
-                total_test_cases = 1
             
             accuracy = evaluation_result.score if evaluation_result else 0.0
             
@@ -580,43 +584,22 @@ class GreenAgentTerminalBench:
     def _extract_tokens_from_trajectory(self, trajectory_data: Dict[str, Any]) -> int:
         """
         Extract actual token count from trajectory data.
-        Looks for <!--TOKENS:N--> markers in assistant responses.
+        Reads cumulative_tokens from A2A message metadata.
         """
-        # Look for the last token count in assistant responses
         last_token_count = 0
         
         for interaction in trajectory_data.get("interactions", []):
             if "assistant" in interaction:
                 assistant_data = interaction["assistant"]
                 
-                # Try to extract from various response structures
-                response_text = ""
-                if isinstance(assistant_data, dict):
-                    # Check in result.message or result.history
-                    if "result" in assistant_data:
-                        result = assistant_data["result"]
-                        if isinstance(result, dict):
-                            if "message" in result and isinstance(result["message"], dict):
-                                if "parts" in result["message"]:
-                                    # Extract text from parts
-                                    for part in result["message"]["parts"]:
-                                        if isinstance(part, dict) and part.get("kind") == "text":
-                                            response_text += part.get("text", "")
-                            if "history" in result:
-                                for msg in result["history"]:
-                                    if isinstance(msg, dict) and msg.get("role") == "assistant":
-                                        response_text += msg.get("content", "")
-                    # Direct content field
-                    if "content" in assistant_data:
-                        response_text += str(assistant_data["content"])
-                else:
-                    response_text = str(assistant_data)
-                
-                # Extract token count from <!--TOKENS:N--> marker
-                import re
-                token_match = re.search(r'<!--TOKENS:(\d+)-->', response_text)
-                if token_match:
-                    last_token_count = int(token_match.group(1))
+                if isinstance(assistant_data, dict) and "result" in assistant_data:
+                    result = assistant_data["result"]
+                    if isinstance(result, dict):
+                        # Check message metadata
+                        if "message" in result and isinstance(result["message"], dict):
+                            metadata = result["message"].get("metadata", {})
+                            if isinstance(metadata, dict) and "cumulative_tokens" in metadata:
+                                last_token_count = metadata["cumulative_tokens"]
         
         return last_token_count
     

@@ -55,11 +55,21 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
         logger.info("Green agent: Received a task, parsing...")
         user_input = context.get_user_input()
         tags = parse_tags(user_input)
-        white_agent_url = tags["white_agent_url"]
+        
+        # Support both single white agent (backward compat) and multiple white agents
+        white_agent_urls_str = tags.get("white_agent_urls")
+        if white_agent_urls_str:
+            white_agent_urls = json.loads(white_agent_urls_str)
+            logger.info(f"Green agent: Using {len(white_agent_urls)} white agents for parallel execution")
+        else:
+            # Fallback to single white agent
+            white_agent_url = tags.get("white_agent_url")
+            white_agent_urls = [white_agent_url] if white_agent_url else []
+        
         task_config_str = tags.get("task_config", "{}")
         task_config = json.loads(task_config_str)
         
-        logger.info(f"Green agent: White agent URL: {white_agent_url}")
+        logger.info(f"Green agent: White agent URLs: {white_agent_urls}")
         logger.info(f"Green agent: Task config: {task_config}")
         
         # Load and execute Terminal Bench tasks
@@ -69,76 +79,123 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
         try:
             # Import the terminal bench runner
             from green_agent.terminal_bench_runner import GreenAgentTerminalBench
-            import tempfile
+            import asyncio
             
             # Extract config
-            task_ids = task_config["task_ids"]
+            task_ids = task_config.get("task_ids")
             dataset_path = Path(task_config["dataset_path"])
             output_directory = Path(task_config.get("output_directory", "results"))
+            model_id = task_config.get("model_id", "default_model")
+            results_dir = task_config.get("results_dir", "./results")
+            max_workers = task_config.get("max_workers", len(white_agent_urls))
+            skip_completed = task_config.get("skip_completed", True)
             
-            # Create terminal bench runner
-            with tempfile.TemporaryDirectory() as temp_dir:
-                tb_runner = GreenAgentTerminalBench(
-                    white_agent_url=white_agent_url,
-                    sandbox_base_path=temp_dir,
-                    terminal_bench_dataset_path=dataset_path
-                )
-                
-                # Load and execute tasks
-                task_tuples = tb_runner.load_terminal_bench_tasks(task_ids)
-                
-                if not task_tuples:
-                    raise ValueError(f"No tasks found for: {task_ids}")
-                
-                # Execute all tasks sequentially
-                all_results = []
-                for task, task_paths in task_tuples:
-                    result = await tb_runner.execute_task_with_sandbox(task, task_paths, output_directory)
-                    all_results.append(result)
-                
-                # Cleanup
-                tb_runner.cleanup_resources()
-                
-                # Prepare summary of all results
-                total_tasks = len(all_results)
-                successful_tasks = sum(1 for r in all_results if r.success)
-                total_score = sum(r.evaluation_result.score if r.evaluation_result else 0.0 for r in all_results)
-                avg_score = total_score / total_tasks if total_tasks > 0 else 0.0
-                total_execution_time = sum(r.execution_time for r in all_results)
-                
-                # Build detailed results message
-                results_summary = []
-                for result in all_results:
-                    result_emoji = "SUCCESS" if result.success else "FAILURE"
-                    score = result.evaluation_result.score if result.evaluation_result else 0.0
-                    results_summary.append(
-                        f"  {result.task_id}: {result_emoji} (Score: {score:.2f}, Time: {result.execution_time:.2f}s)"
-                    )
-                
-                metrics = {
-                    "time_used": time.time() - timestamp_started,
-                    "total_tasks": total_tasks,
-                    "successful_tasks": successful_tasks,
-                    "failed_tasks": total_tasks - successful_tasks,
-                    "average_score": avg_score,
-                    "total_execution_time": total_execution_time
-                }
-                
-                logger.info("Green agent: Evaluation complete.")
+            # Create a runner to load tasks (using first white agent)
+            tb_runner = GreenAgentTerminalBench(
+                white_agent_url=white_agent_urls[0],
+                terminal_bench_dataset_path=str(dataset_path),
+                model_id=model_id,
+                results_dir=results_dir
+            )
+            
+            # Load tasks
+            task_tuples = tb_runner.load_terminal_bench_tasks(task_ids, skip_completed=skip_completed)
+            
+            if not task_tuples:
+                logger.info("No tasks to evaluate (all completed or none found)")
                 await event_queue.enqueue_event(
-                    new_agent_text_message(
-                        f"Evaluation Complete!\n\n"
-                        f"Summary:\n"
-                        f"  Total Tasks: {total_tasks}\n"
-                        f"  Successful: {successful_tasks}\n"
-                        f"  Failed: {total_tasks - successful_tasks}\n"
-                        f"  Average Score: {avg_score:.2f}\n"
-                        f"  Total Execution Time: {total_execution_time:.2f}s\n\n"
-                        f"Task Results:\n" + "\n".join(results_summary) + "\n\n"
-                        f"Metrics: {json.dumps(metrics, indent=2)}\n"
-                    )
+                    new_agent_text_message("No tasks to evaluate.")
                 )
+                return
+            
+            logger.info(f"Loaded {len(task_tuples)} tasks, distributing across {len(white_agent_urls)} white agents")
+            
+            # Execute tasks in parallel using asyncio.gather
+            async def execute_single_task(task, task_paths, white_url, idx):
+                """Execute a single task with a specific white agent"""
+                runner = GreenAgentTerminalBench(
+                    white_agent_url=white_url,
+                    terminal_bench_dataset_path=str(dataset_path),
+                    model_id=model_id,
+                    results_dir=results_dir
+                )
+                try:
+                    result = await runner.execute_task_with_sandbox(task, task_paths, output_directory)
+                    logger.info(f"Task {idx+1}/{len(task_tuples)}: {result.task_id} - {'PASSED' if result.success else 'FAILED'}")
+                    return result
+                finally:
+                    runner.cleanup_resources()
+            
+            # Create tasks with round-robin white agent assignment
+            parallel_tasks = []
+            for i, (task, task_paths) in enumerate(task_tuples):
+                white_url = white_agent_urls[i % len(white_agent_urls)]
+                parallel_tasks.append(execute_single_task(task, task_paths, white_url, i))
+            
+            # Execute all tasks in parallel with concurrency limit
+            logger.info(f"Starting parallel execution with {max_workers} concurrent workers...")
+            semaphore = asyncio.Semaphore(max_workers)
+            
+            async def bounded_task(task):
+                async with semaphore:
+                    return await task
+            
+            all_results = await asyncio.gather(*[bounded_task(t) for t in parallel_tasks], return_exceptions=True)
+            
+            # Filter out exceptions and log them
+            successful_results = []
+            for i, result in enumerate(all_results):
+                if isinstance(result, Exception):
+                    logger.error(f"Task {i} failed with exception: {result}")
+                else:
+                    successful_results.append(result)
+            
+            all_results = successful_results
                 
+            # Prepare summary of all results
+            total_tasks = len(all_results)
+            successful_tasks = sum(1 for r in all_results if r.success)
+            total_score = sum(r.evaluation_result.score if r.evaluation_result else 0.0 for r in all_results)
+            avg_score = total_score / total_tasks if total_tasks > 0 else 0.0
+            total_execution_time = sum(r.execution_time for r in all_results)
+            wall_time = time.time() - timestamp_started
+            
+            # Build detailed results message
+            results_summary = []
+            for result in all_results:
+                result_emoji = "✓" if result.success else "✗"
+                score = result.evaluation_result.score if result.evaluation_result else 0.0
+                results_summary.append(
+                    f"  {result_emoji} {result.task_id}: Score={score:.2f}, Time={result.execution_time:.2f}s"
+                )
+            
+            metrics = {
+                "wall_time": wall_time,
+                "total_tasks": total_tasks,
+                "successful_tasks": successful_tasks,
+                "failed_tasks": total_tasks - successful_tasks,
+                "average_score": avg_score,
+                "total_execution_time": total_execution_time,
+                "parallelization": len(white_agent_urls)
+            }
+            
+            logger.info("Green agent: Parallel evaluation complete.")
+            await event_queue.enqueue_event(
+                new_agent_text_message(
+                    f"Parallel Evaluation Complete!\n\n"
+                    f"Summary:\n"
+                    f"  Total Tasks: {total_tasks}\n"
+                    f"  Successful: {successful_tasks}\n"
+                    f"  Failed: {total_tasks - successful_tasks}\n"
+                    f"  Average Score: {avg_score:.2f}\n"
+                    f"  Wall Time: {wall_time:.2f}s\n"
+                    f"  Total Execution Time: {total_execution_time:.2f}s\n"
+                    f"  Parallel Workers: {len(white_agent_urls)}\n\n"
+                    f"Task Results:\n" + "\n".join(results_summary) + "\n\n"
+                    f"Metrics: {json.dumps(metrics, indent=2)}\n"
+                )
+            )
+            
         except Exception as e:
             logger.error(f"Green agent: Evaluation failed: {e}")
             import traceback
