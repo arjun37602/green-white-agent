@@ -58,6 +58,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
     def __init__(self, model="gpt-5"):
         self.model = model
         self.ctx_id_to_messages = {}  # Maintain history per context_id
+        self.ctx_id_to_tokens = {}  # Track cumulative tokens per context_id
         self.logger = logging.getLogger(__name__)
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -67,6 +68,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         # Initialize or get message history for this context
         if context.context_id not in self.ctx_id_to_messages:
             self.ctx_id_to_messages[context.context_id] = []
+            self.ctx_id_to_tokens[context.context_id] = 0
         
         messages = self.ctx_id_to_messages[context.context_id]
         
@@ -86,10 +88,17 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         assistant_message = response.choices[0].message
         assistant_content = assistant_message.content or ""
         
-        # Add assistant message to history
+        usage = response.usage if hasattr(response, 'usage') else None
+        if usage and hasattr(usage, 'completion_tokens'):
+            tokens_this_turn = usage.total_tokens
+            self.ctx_id_to_tokens[context.context_id] += tokens_this_turn
+            self.logger.debug(f"Completion tokens : {usage.completion_tokens})")
+        else:
+            self.logger.warning(f"No completion tokens found in response")
         messages.append({
             "role": "assistant",
             "content": assistant_content,
+            "tokens": usage.total_tokens if usage else 0
         })
         
         # Send response back

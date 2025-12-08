@@ -25,6 +25,7 @@ from docker.models.containers import Container
 
 from .task_evaluator import TaskEvaluator, EvaluationResult
 from .dataset_loaders.terminal_bench_loader import TerminalBenchTaskLoader
+from .results_store import ResultsStore, TaskResult
 
 # A2A imports for proper message handling
 from utils import send_message
@@ -101,13 +102,21 @@ class GreenAgentTerminalBench:
     def __init__(self, white_agent_url: str = "http://localhost:8002", 
                  sandbox_base_path: Optional[str] = None,
                  terminal_bench_dataset_path: Optional[str] = None,
-                 model_id: str = "default_model"):
+                 model_id: str = "default_model",
+                 results_dir: str = "./results"):
         self.white_agent_url = white_agent_url
         self.model_id = model_id
         self.logger = logging.getLogger(__name__)
         
         # Initialize task evaluator
         self.task_evaluator = TaskEvaluator()
+        
+        # Initialize results store
+        self.results_store = ResultsStore(results_dir)
+        
+        # Load completed tasks for caching
+        self.completed_tasks = self.results_store.load_completed_tasks(model_id)
+        self.logger.info(f"Loaded {len(self.completed_tasks)} completed tasks for model {model_id}")
         
         # Initialize Terminal-Bench loader if dataset path provided
         self.tb_loader = None
@@ -127,12 +136,17 @@ class GreenAgentTerminalBench:
         self.current_container: Optional[Container] = None
         self.current_container_manager: Optional[DockerComposeManager] = None
     
-    def load_terminal_bench_tasks(self, task_ids: List[str] = None) -> List[Tuple[Task, TaskPaths]]:
+    def is_task_completed(self, task_id: str) -> bool:
+        """Check if a task has already been completed (for caching)"""
+        return task_id in self.completed_tasks
+    
+    def load_terminal_bench_tasks(self, task_ids: List[str] = None, skip_completed: bool = True) -> List[Tuple[Task, TaskPaths]]:
         """
         Load Terminal Bench tasks from Terminal-Bench dataset.
         
         Args:
             task_ids: Specific task IDs to load (None = load all)
+            skip_completed: If True, skip tasks that are already completed
             
         Returns:
             List of (Task, TaskPaths) tuples from Terminal Bench
@@ -149,6 +163,15 @@ class GreenAgentTerminalBench:
         # Load from Terminal-Bench dataset - returns (Task, TaskPaths) tuples
         self.logger.info("Loading tasks from Terminal-Bench dataset")
         tasks = self.tb_loader.load_tasks_from_dataset(task_ids)
+        
+        # Filter out completed tasks if requested
+        if skip_completed:
+            original_count = len(tasks)
+            tasks = [(task, task_paths) for task, task_paths in tasks 
+                    if task_paths.input_path.name not in self.completed_tasks]
+            skipped = original_count - len(tasks)
+            if skipped > 0:
+                self.logger.info(f"Skipped {skipped} already completed tasks")
         
         self.logger.info(f"Loaded {len(tasks)} tasks from Terminal-Bench dataset")
         return tasks
@@ -236,11 +259,27 @@ class GreenAgentTerminalBench:
         Args:
             task: Terminal Bench Task object
             task_paths: Terminal Bench TaskPaths object
+            output_directory: Directory for output logs
             
         Returns:
             TaskExecutionResult with complete execution details
         """
         task_id = task_paths.input_path.name
+        
+        # Check cache first
+        if self.is_task_completed(task_id):
+            self.logger.info(f"Task {task_id} already completed, skipping...")
+            # Return a cached result indicator
+            return TaskExecutionResult(
+                task_id=task_id,
+                success=True,  # Already completed means it was successful
+                execution_time=0.0,
+                evaluation_result=None,
+                sandbox_id="cached",
+                white_agent_response={"status": "cached"},
+                timestamp=datetime.now(timezone.utc).isoformat()
+            )
+        
         start_time = time.time()
         
         # Initialize trajectory logging for this task
@@ -450,10 +489,51 @@ class GreenAgentTerminalBench:
             trajectory_data["end_time"] = datetime.now(timezone.utc).isoformat()
             trajectory_data["execution_time"] = execution_time
             
+            # Calculate metrics from trajectory
+            num_turns = len([i for i in trajectory_data["interactions"] if "assistant" in i])
+            num_tokens = self._extract_tokens_from_trajectory(trajectory_data)
+            
+            # Extract test case metrics from evaluation
+            if evaluation_result and evaluation_result.details:
+                # Try to extract from evaluation details
+                passed_test_cases = evaluation_result.details.get("passed_tests", 1 if evaluation_result.passed else 0)
+                total_test_cases = evaluation_result.details.get("total_tests", 1)
+            else:
+                # Fallback: use passed as binary
+                passed_test_cases = 1 if (evaluation_result and evaluation_result.passed) else 0
+                total_test_cases = 1
+            
+            accuracy = evaluation_result.score if evaluation_result else 0.0
+            
+            # Save to results store
+            task_result = TaskResult(
+                task_id=task_id,
+                attempt_id=0,  # Can be incremented if running multiple attempts
+                num_tokens=num_tokens,
+                num_turns=num_turns,
+                passed_test_cases=passed_test_cases,
+                total_test_cases=total_test_cases,
+                accuracy=accuracy,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                execution_time=execution_time,
+                message_history=trajectory_data["interactions"],
+                metadata={
+                    "model_id": self.model_id,
+                    "difficulty": task.difficulty.value,
+                    "category": task.category,
+                    "sandbox_id": container.name,
+                }
+            )
+            self.results_store.save_result(self.model_id, task_result)
+            self.logger.info(f"Saved result to {self.results_store.get_model_file(self.model_id)}")
+            
+            # Add to completed tasks cache
+            self.completed_tasks.add(task_id)
+            
             # Create execution result
             result = TaskExecutionResult(
                 task_id=task_id,
-                success=evaluation_result.passed,
+                success=evaluation_result.passed if evaluation_result else False,
                 execution_time=execution_time,
                 evaluation_result=evaluation_result,
                 sandbox_id=container.name,
@@ -496,6 +576,49 @@ class GreenAgentTerminalBench:
             # Clear container references
             self.current_container = None
             self.current_container_manager = None
+    
+    def _extract_tokens_from_trajectory(self, trajectory_data: Dict[str, Any]) -> int:
+        """
+        Extract actual token count from trajectory data.
+        Looks for <!--TOKENS:N--> markers in assistant responses.
+        """
+        # Look for the last token count in assistant responses
+        last_token_count = 0
+        
+        for interaction in trajectory_data.get("interactions", []):
+            if "assistant" in interaction:
+                assistant_data = interaction["assistant"]
+                
+                # Try to extract from various response structures
+                response_text = ""
+                if isinstance(assistant_data, dict):
+                    # Check in result.message or result.history
+                    if "result" in assistant_data:
+                        result = assistant_data["result"]
+                        if isinstance(result, dict):
+                            if "message" in result and isinstance(result["message"], dict):
+                                if "parts" in result["message"]:
+                                    # Extract text from parts
+                                    for part in result["message"]["parts"]:
+                                        if isinstance(part, dict) and part.get("kind") == "text":
+                                            response_text += part.get("text", "")
+                            if "history" in result:
+                                for msg in result["history"]:
+                                    if isinstance(msg, dict) and msg.get("role") == "assistant":
+                                        response_text += msg.get("content", "")
+                    # Direct content field
+                    if "content" in assistant_data:
+                        response_text += str(assistant_data["content"])
+                else:
+                    response_text = str(assistant_data)
+                
+                # Extract token count from <!--TOKENS:N--> marker
+                import re
+                token_match = re.search(r'<!--TOKENS:(\d+)-->', response_text)
+                if token_match:
+                    last_token_count = int(token_match.group(1))
+        
+        return last_token_count
     
     def _extract_tool_calls(self, white_agent_response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
