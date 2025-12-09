@@ -14,7 +14,7 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentSkill, AgentCard, AgentCapabilities
 from a2a.utils import new_agent_text_message
-from litellm import completion
+from litellm import acompletion
 
 
 # Load environment variables from .env file in project root
@@ -75,7 +75,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         # Add user input to message history
         messages.append({"role": "user", "content": user_input})
         
-        # Call LLM (no native tool calling - just text)
+        # Call LLM asynchronously (no native tool calling - just text)
         api_params = {
             "model": self.model,
             "messages": messages,
@@ -84,7 +84,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         if "gpt-5" not in self.model:
             api_params["temperature"] = 0.0
         
-        response = completion(**api_params)
+        response = await acompletion(**api_params)
         assistant_message = response.choices[0].message
         assistant_content = assistant_message.content or ""
         
