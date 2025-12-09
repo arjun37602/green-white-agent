@@ -6,15 +6,15 @@ import logging
 import os
 import json
 import re
+import uuid
 from pathlib import Path
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import InMemoryTaskStore
-from a2a.types import AgentSkill, AgentCard, AgentCapabilities
-from a2a.utils import new_agent_text_message
-from litellm import completion
+from a2a.types import AgentSkill, AgentCard, AgentCapabilities, Message, Part, Role, TextPart
+from litellm import acompletion
 
 
 # Load environment variables from .env file in project root
@@ -58,46 +58,79 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
     def __init__(self, model="gpt-5"):
         self.model = model
         self.ctx_id_to_messages = {}  # Maintain history per context_id
+        self.ctx_id_to_tokens = {}  # Track token usage per context_id
         self.logger = logging.getLogger(__name__)
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        # Get user input from context
-        user_input = context.get_user_input()
-        
-        # Initialize or get message history for this context
-        if context.context_id not in self.ctx_id_to_messages:
-            self.ctx_id_to_messages[context.context_id] = []
-        
-        messages = self.ctx_id_to_messages[context.context_id]
-        
-        # Add user input to message history
-        messages.append({"role": "user", "content": user_input})
-        
-        # Call LLM (no native tool calling - just text)
-        api_params = {
-            "model": self.model,
-            "messages": messages,
-        }
-        
-        if "gpt-5" not in self.model:
-            api_params["temperature"] = 0.0
-        
-        response = completion(**api_params)
-        assistant_message = response.choices[0].message
-        assistant_content = assistant_message.content or ""
-        
-        # Add assistant message to history
-        messages.append({
-            "role": "assistant",
-            "content": assistant_content,
-        })
-        
-        # Send response back
-        await event_queue.enqueue_event(
-            new_agent_text_message(
-                assistant_content, context_id=context.context_id
+        try:
+            # Get user input from context
+            user_input = context.get_user_input()
+            self.logger.debug(f"White agent received input for context {context.context_id}: {user_input[:100]}...")
+            
+            # Initialize or get message history for this context
+            if context.context_id not in self.ctx_id_to_messages:
+                self.ctx_id_to_messages[context.context_id] = []
+                self.ctx_id_to_tokens[context.context_id] = 0
+            
+            messages = self.ctx_id_to_messages[context.context_id]
+            
+            # Add user input to message history
+            messages.append({"role": "user", "content": user_input})
+            
+            # Call LLM asynchronously (no native tool calling - just text)
+            api_params = {
+                "model": self.model,
+                "messages": messages,
+            }
+            
+            if "gpt-5" not in self.model:
+                api_params["temperature"] = 0.0
+            
+            self.logger.debug(f"Calling LLM with model={self.model}")
+            response = await acompletion(**api_params)
+            assistant_message = response.choices[0].message
+            assistant_content = assistant_message.content or ""
+            
+            # Track token usage
+            usage = response.usage if hasattr(response, 'usage') else None
+            completion_tokens = 0
+            cumulative_tokens = 0
+            
+            if usage and hasattr(usage, 'completion_tokens'):
+                completion_tokens = usage.completion_tokens
+                self.ctx_id_to_tokens[context.context_id] += completion_tokens
+                cumulative_tokens = self.ctx_id_to_tokens[context.context_id]
+                self.logger.debug(f"Tokens: {completion_tokens} completion, {cumulative_tokens} cumulative for context {context.context_id}")
+            
+            # Add assistant message to history
+            messages.append({
+                "role": "assistant",
+                "content": assistant_content,
+            })
+            
+            # Send response back with token metadata
+            # Build Message manually to include metadata
+            message = Message(
+                role=Role.agent,
+                parts=[Part(root=TextPart(text=assistant_content))],
+                message_id=str(uuid.uuid4()),
+                context_id=context.context_id,
+                metadata={
+                    "completion_tokens": completion_tokens,
+                    "cumulative_tokens": cumulative_tokens
+                }
             )
-        )
+            await event_queue.enqueue_event(message)
+            self.logger.debug(f"White agent sent response for context {context.context_id}")
+            
+        except Exception as e:
+            # Log the full error details
+            import traceback
+            error_details = traceback.format_exc()
+            self.logger.error(f"White agent execute failed for context {context.context_id}: {e}")
+            self.logger.error(f"Full traceback:\n{error_details}")
+            # Re-raise so A2A SDK can handle it properly
+            raise
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         raise NotImplementedError

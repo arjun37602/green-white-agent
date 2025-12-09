@@ -12,37 +12,62 @@ from white_agent import start_white_agent
 from utils import send_message, wait_agent_ready
 
 
-async def launch_evaluation(model="gpt-5", task_ids=None, output_base_dir="results"):
+async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results", max_parallel_tasks=5, max_attempts=1):
     """
     Launch evaluation with configurable settings.
     
     Args:
         model: Model name to use (e.g., "gpt-5-nano", "gpt-5", "gpt-4o")
         task_ids: List of task IDs to evaluate (None = all tasks, [] = default to ["hello-world"])
-        output_base_dir: Base directory for saving results (default: "results")
+        results_dir: Directory for JSONL results and outputs (default: "./results")
+        max_parallel_tasks: Maximum number of parallel tasks (default: 5)
+        max_attempts: Maximum attempts per task before caching (default: 1)
     """
     # Don't override None here - let it pass through to load all tasks
     # Only set default if it's an empty list (which shouldn't happen, but be safe)
     if task_ids == []:
         task_ids = ["hello-world"]
     
-    # Create output directory with timestamp
+    # Stable results directory for JSONL cache (no timestamp for caching)
+    results_base = Path(results_dir)
+    results_base.mkdir(parents=True, exist_ok=True)
+    
+    # Create run-specific output directory with timestamp + UUID
+    import uuid
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_safe = model.replace("/", "_").replace(":", "_")
-    if task_ids is None:
-        task_ids_str = "all_tasks"
-    elif len(task_ids) <= 3:
-        task_ids_str = "_".join(task_ids[:3])
-    else:
-        task_ids_str = f"{len(task_ids)}_tasks"
-    output_dir = Path(output_base_dir) / f"eval_{timestamp}_{model_safe}_{task_ids_str}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {output_dir}")
+    run_id = str(uuid.uuid4())[:8]
+    run_output_dir = results_base / f"{timestamp}_{run_id}"
+    run_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Summary goes inside the run directory
+    summary_dir = run_output_dir / "summary"
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"Stable cache directory: {results_base}")
+    print(f"JSONL cache: {results_base}/{model.replace('/', '_')}.jsonl")
+    print(f"Run output directory: {run_output_dir}")
+    print(f"Run summary directory: {summary_dir}")
+    
+    # Find available ports
+    import socket
+    
+    def find_free_port(start_port=9001, max_tries=10):
+        """Find an available port starting from start_port."""
+        for port in range(start_port, start_port + max_tries):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("localhost", port))
+                    return port
+            except OSError:
+                continue
+        raise RuntimeError(f"No free ports found in range {start_port}-{start_port+max_tries}")
     
     # start green agent
     print("Launching green agent...")
-    green_address = ("localhost", 9001)
+    green_port = find_free_port(9001)
+    green_address = ("localhost", green_port)
     green_url = f"http://{green_address[0]}:{green_address[1]}"
+    print(f"Green agent port: {green_port}")
     p_green = multiprocessing.Process(
         target=start_green_agent, args=("terminal_bench_green_agent", *green_address)
     )
@@ -52,8 +77,10 @@ async def launch_evaluation(model="gpt-5", task_ids=None, output_base_dir="resul
 
     # start white agent
     print(f"Launching white agent with model={model}...")
-    white_address = ("localhost", 9002)
+    white_port = find_free_port(9011)
+    white_address = ("localhost", white_port)
     white_url = f"http://{white_address[0]}:{white_address[1]}"
+    print(f"White agent port: {white_port}")
     p_white = multiprocessing.Process(
         target=start_white_agent, 
         args=("terminal_bench_white_agent", *white_address),
@@ -70,7 +97,11 @@ async def launch_evaluation(model="gpt-5", task_ids=None, output_base_dir="resul
     task_config = {
         "task_ids": task_ids,  # None = all tasks, list = specific tasks
         "dataset_path": "data/tasks",
-        "output_directory": str(output_dir)
+        "output_directory": str(run_output_dir),  # Run-specific: sessions, agent-logs
+        "model_id": model,
+        "results_dir": str(results_base),  # Stable: JSONL cache
+        "max_parallel_tasks": max_parallel_tasks,
+        "max_attempts": max_attempts
     }
     task_text = f"""
 Your task is to evaluate the white agent located at:
@@ -98,8 +129,8 @@ You should use the following task configuration:
                 trajectories_data = trajectories_response.json()
                 trajectories = trajectories_data.get("trajectories", {})
                 
-                # Save trajectories to output directory
-                trajectories_file = output_dir / "trajectories.json"
+                # Save trajectories to run-specific directory
+                trajectories_file = run_output_dir / "trajectories.json"
                 with open(trajectories_file, "w") as f:
                     json.dump(trajectories, f, indent=2)
                 print(f"Saved trajectories to {trajectories_file}")
@@ -124,12 +155,15 @@ You should use the following task configuration:
         "model": model,
         "task_ids": task_ids,
         "timestamp": timestamp,
-        "output_directory": str(output_dir),
+        "run_id": run_id,
+        "cache_directory": str(results_base),
+        "run_output_directory": str(run_output_dir),
+        "results_jsonl_cache": str(results_base / f"{model.replace('/', '_')}.jsonl"),
         "green_agent_url": green_url,
         "white_agent_url": white_url,
         "response": response_dict
     }
-    summary_file = output_dir / "evaluation_summary.json"
+    summary_file = summary_dir / "evaluation_summary.json"
     with open(summary_file, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"Saved evaluation summary to {summary_file}")
@@ -140,7 +174,12 @@ You should use the following task configuration:
     p_white.terminate()
     p_white.join()
     print("Agents terminated.")
-    print(f"\nResults saved to: {output_dir}")
+    print(f"\n✅ JSONL cache: {results_base}/{model.replace('/', '_')}.jsonl")
+    print(f"✅ Run outputs: {run_output_dir}")
+    print(f"   - Sessions: {run_output_dir}/sessions")
+    print(f"   - Agent logs: {run_output_dir}/agent-logs")
+    print(f"   - Trajectories: {run_output_dir}/trajectories.json")
+    print(f"   - Summary: {summary_file}")
 
 
 if __name__ == "__main__":
@@ -163,6 +202,24 @@ if __name__ == "__main__":
         action="store_true",
         help="Evaluate all tasks in the dataset (overrides --task-ids)"
     )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default="./results",
+        help="Stable directory for JSONL results cache (e.g., ./results/model.jsonl). Default: ./results"
+    )
+    parser.add_argument(
+        "--max-parallel-tasks",
+        type=int,
+        default=5,
+        help="Maximum number of parallel tasks. Default: 5"
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=1,
+        help="Maximum attempts per task before caching (allows retries). Default: 1"
+    )
     
     args = parser.parse_args()
     
@@ -173,5 +230,11 @@ if __name__ == "__main__":
     else:
         task_ids = args.task_ids if args.task_ids else ["hello-world"]
     
-    asyncio.run(launch_evaluation(model=args.model, task_ids=task_ids))
+    asyncio.run(launch_evaluation(
+        model=args.model, 
+        task_ids=task_ids, 
+        results_dir=args.results_dir,
+        max_parallel_tasks=args.max_parallel_tasks,
+        max_attempts=args.max_attempts
+    ))
 

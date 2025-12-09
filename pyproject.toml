@@ -7,7 +7,7 @@ name = "green-white-agent"
 version = "0.1.0"
 description = "Green agent for Terminal-Bench integration with A2A protocol support"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "Green Agent Team", email = "team@greenagent.com" }]
 license = { text = "MIT" }
 classifiers = [
@@ -27,13 +27,13 @@ dependencies = [
     "python-dotenv==1.1.1",
     "PyYAML==6.0.3",
     "requests==2.32.5",
+    "terminal-bench",
     "typer>=0.19.2",
     "uvicorn==0.38.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
-full = ["terminal-bench"]
 
 [tool.setuptools.packages.find]
 where = ["."]
