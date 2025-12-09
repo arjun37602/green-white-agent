@@ -75,26 +75,29 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
             task_ids = task_config["task_ids"]
             dataset_path = Path(task_config["dataset_path"])
             output_directory = Path(task_config.get("output_directory", "results"))
+            model_id = task_config.get("model_id", "default_model")
+            results_dir = task_config.get("results_dir", "./results")
+            max_parallel_tasks = task_config.get("max_parallel_tasks", 5)
             
             # Create terminal bench runner
             with tempfile.TemporaryDirectory() as temp_dir:
                 tb_runner = GreenAgentTerminalBench(
                     white_agent_url=white_agent_url,
                     sandbox_base_path=temp_dir,
-                    terminal_bench_dataset_path=dataset_path
+                    terminal_bench_dataset_path=dataset_path,
+                    model_id=model_id,
+                    results_dir=results_dir,
+                    max_parallel_tasks=max_parallel_tasks
                 )
                 
-                # Load and execute tasks
+                # Load tasks
                 task_tuples = tb_runner.load_terminal_bench_tasks(task_ids)
                 
                 if not task_tuples:
                     raise ValueError(f"No tasks found for: {task_ids}")
                 
-                # Execute all tasks sequentially
-                all_results = []
-                for task, task_paths in task_tuples:
-                    result = await tb_runner.execute_task_with_sandbox(task, task_paths, output_directory)
-                    all_results.append(result)
+                # Execute all tasks in parallel with caching
+                all_results = await tb_runner.execute_multiple_tasks_parallel(task_tuples, output_directory)
                 
                 # Cleanup
                 tb_runner.cleanup_resources()

@@ -12,7 +12,8 @@ from white_agent import start_white_agent
 from utils import send_message, wait_agent_ready
 
 
-async def launch_evaluation(model="gpt-5", task_ids=None, output_base_dir="results"):
+async def launch_evaluation(model="gpt-5", task_ids=None, output_base_dir="results", 
+                           results_dir="./results", max_parallel_tasks=5):
     """
     Launch evaluation with configurable settings.
     
@@ -20,6 +21,8 @@ async def launch_evaluation(model="gpt-5", task_ids=None, output_base_dir="resul
         model: Model name to use (e.g., "gpt-5-nano", "gpt-5", "gpt-4o")
         task_ids: List of task IDs to evaluate (None = all tasks, [] = default to ["hello-world"])
         output_base_dir: Base directory for saving results (default: "results")
+        results_dir: Directory for JSONL results (default: "./results")
+        max_parallel_tasks: Maximum number of parallel tasks (default: 5)
     """
     # Don't override None here - let it pass through to load all tasks
     # Only set default if it's an empty list (which shouldn't happen, but be safe)
@@ -70,7 +73,10 @@ async def launch_evaluation(model="gpt-5", task_ids=None, output_base_dir="resul
     task_config = {
         "task_ids": task_ids,  # None = all tasks, list = specific tasks
         "dataset_path": "data/tasks",
-        "output_directory": str(output_dir)
+        "output_directory": str(output_dir),
+        "model_id": model,
+        "results_dir": results_dir,
+        "max_parallel_tasks": max_parallel_tasks
     }
     task_text = f"""
 Your task is to evaluate the white agent located at:
@@ -163,6 +169,18 @@ if __name__ == "__main__":
         action="store_true",
         help="Evaluate all tasks in the dataset (overrides --task-ids)"
     )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default="./results",
+        help="Directory for JSONL results with caching. Default: ./results"
+    )
+    parser.add_argument(
+        "--max-parallel-tasks",
+        type=int,
+        default=5,
+        help="Maximum number of parallel tasks. Default: 5"
+    )
     
     args = parser.parse_args()
     
@@ -173,5 +191,10 @@ if __name__ == "__main__":
     else:
         task_ids = args.task_ids if args.task_ids else ["hello-world"]
     
-    asyncio.run(launch_evaluation(model=args.model, task_ids=task_ids))
+    asyncio.run(launch_evaluation(
+        model=args.model, 
+        task_ids=task_ids, 
+        results_dir=args.results_dir,
+        max_parallel_tasks=args.max_parallel_tasks
+    ))
 

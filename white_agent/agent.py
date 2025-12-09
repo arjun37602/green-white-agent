@@ -58,6 +58,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
     def __init__(self, model="gpt-5"):
         self.model = model
         self.ctx_id_to_messages = {}  # Maintain history per context_id
+        self.ctx_id_to_tokens = {}  # Track token usage per context_id
         self.logger = logging.getLogger(__name__)
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -67,6 +68,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         # Initialize or get message history for this context
         if context.context_id not in self.ctx_id_to_messages:
             self.ctx_id_to_messages[context.context_id] = []
+            self.ctx_id_to_tokens[context.context_id] = 0
         
         messages = self.ctx_id_to_messages[context.context_id]
         
@@ -86,16 +88,32 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         assistant_message = response.choices[0].message
         assistant_content = assistant_message.content or ""
         
+        # Track token usage
+        usage = response.usage if hasattr(response, 'usage') else None
+        completion_tokens = 0
+        cumulative_tokens = 0
+        
+        if usage and hasattr(usage, 'completion_tokens'):
+            completion_tokens = usage.completion_tokens
+            self.ctx_id_to_tokens[context.context_id] += completion_tokens
+            cumulative_tokens = self.ctx_id_to_tokens[context.context_id]
+            self.logger.debug(f"Tokens: {completion_tokens} completion, {cumulative_tokens} cumulative for context {context.context_id}")
+        
         # Add assistant message to history
         messages.append({
             "role": "assistant",
             "content": assistant_content,
         })
         
-        # Send response back
+        # Send response back with token metadata
         await event_queue.enqueue_event(
             new_agent_text_message(
-                assistant_content, context_id=context.context_id
+                assistant_content, 
+                context_id=context.context_id,
+                metadata={
+                    "completion_tokens": completion_tokens,
+                    "cumulative_tokens": cumulative_tokens
+                }
             )
         )
 
