@@ -32,10 +32,10 @@ class EvaluationCriteria:
 class EvaluationResult:
     """Result of task evaluation"""
     task_id: str
-    passed: bool
-    score: float  # 0.0 to 1.0
-    correctness: Dict[str, Any]
-
+    passed: bool  # True if all tests passed
+    accuracy: float  # Fraction of tests passed (0.0 to 1.0)
+    passed_test_cases: int  # Number of tests that passed
+    total_test_cases: int  # Total number of tests run
     details: Dict[str, Any]
     timestamp: str
 
@@ -71,36 +71,31 @@ class TaskEvaluator:
         if not pytest_results or pytest_results["tests_run"] == 0:
             raise ValueError(f"No pytest tests found or executed for task {task_id}")
         
-        # Use pytest results as source of truth for correctness
-        correctness_result = {
-            "passed": pytest_results["passed"],
-            "unit_tests": pytest_results
-        }
+        # Extract test metrics from pytest results
+        tests_passed = pytest_results.get("tests_passed", 0)
+        tests_run = pytest_results.get("tests_run", 1)
+        tests_failed = pytest_results.get("tests_failed", 0)
         
-        # Extract token/request counts from white agent response
-        token_request_data = self._extract_token_and_request_counts(white_agent_response)
+        # Calculate accuracy (fraction of tests passed)
+        accuracy = tests_passed / tests_run if tests_run > 0 else 0.0
         
-        # Binary scoring: 1.0 if all tests pass, 0.0 otherwise
-        overall_score = 1.0 if correctness_result["passed"] else 0.0
+        # Task passed if all tests passed (no failures)
+        passed = pytest_results.get("passed", False)
         
-        # Task passed if all tests passed
-        passed = correctness_result["passed"]
+        # Extract token count from white agent response
+        total_tokens = self._extract_token_count(white_agent_response)
         
         return EvaluationResult(
             task_id=task_id,
             passed=passed,
-            score=overall_score,
-            correctness=correctness_result,
+            accuracy=accuracy,
+            passed_test_cases=tests_passed,
+            total_test_cases=tests_run,
             details={
-                "total_tokens": token_request_data.get("total_tokens"),
-                "total_requests": token_request_data.get("total_requests"),
-                "tokens_per_request": (
-                    token_request_data["total_tokens"] / token_request_data["total_requests"]
-                    if token_request_data.get("total_tokens") is not None 
-                    and token_request_data.get("total_requests") is not None
-                    and token_request_data["total_requests"] > 0
-                    else None
-                ),
+                "total_tokens": total_tokens,
+                "unit_tests": pytest_results  # Keep full details for debugging
+            } if total_tokens else {
+                "unit_tests": pytest_results
             },
             timestamp=datetime.now(timezone.utc).isoformat()
         )
@@ -254,88 +249,44 @@ class TaskEvaluator:
             "raw_output": output
         }
     
-    def _extract_token_and_request_counts(self, white_agent_response: Optional[Dict[str, Any]]) -> Dict[str, Optional[int]]:
+    def _extract_token_count(self, white_agent_response: Optional[Dict[str, Any]]) -> Optional[int]:
         """
-        Extract token and request counts from white agent response.
+        Extract cumulative token count from white agent response.
         
         Args:
             white_agent_response: Response from white agent
             
         Returns:
-            Dictionary with 'total_tokens' and 'total_requests' (None if not available)
+            Total tokens used (cumulative), or None if not available
         """
-        result = {
-            "total_tokens": None,
-            "total_requests": None
-        }
-        
         if not white_agent_response:
-            return result
-        
-        # Log response structure for debugging
-        self.logger.debug(f"White agent response structure: {json.dumps(white_agent_response, indent=2)[:500]}")
+            return None
         
         try:
-            # Try to extract token usage from response metadata
-            # Check multiple possible paths
-            token_data = None
-            
-            # Path 1: result.metadata.usage
+            # Path 1: result.message.metadata.cumulative_tokens (our implementation)
             if "result" in white_agent_response:
                 result_data = white_agent_response["result"]
                 if isinstance(result_data, dict):
+                    # Check message.metadata for cumulative_tokens
+                    if "message" in result_data:
+                        message = result_data["message"]
+                        if isinstance(message, dict) and "metadata" in message:
+                            metadata = message["metadata"]
+                            if isinstance(metadata, dict) and "cumulative_tokens" in metadata:
+                                tokens = metadata["cumulative_tokens"]
+                                self.logger.info(f"Extracted cumulative_tokens: {tokens}")
+                                return tokens
+                    
+                    # Fallback: Check result.metadata directly
                     if "metadata" in result_data:
                         metadata = result_data["metadata"]
                         if isinstance(metadata, dict):
-                            if "usage" in metadata:
-                                token_data = metadata["usage"]
+                            if "cumulative_tokens" in metadata:
+                                return metadata["cumulative_tokens"]
                             elif "total_tokens" in metadata:
-                                token_data = metadata
-            
-            # Path 2: metadata.usage (top level)
-            if not token_data and "metadata" in white_agent_response:
-                metadata = white_agent_response["metadata"]
-                if isinstance(metadata, dict):
-                    if "usage" in metadata:
-                        token_data = metadata["usage"]
-                    elif "total_tokens" in metadata:
-                        token_data = metadata
-            
-            # Extract total_tokens if found
-            if token_data:
-                if isinstance(token_data, dict):
-                    if "total_tokens" in token_data:
-                        result["total_tokens"] = token_data["total_tokens"]
-                    elif "prompt_tokens" in token_data and "completion_tokens" in token_data:
-                        # Calculate total if not provided
-                        result["total_tokens"] = token_data["prompt_tokens"] + token_data["completion_tokens"]
-                elif isinstance(token_data, int):
-                    result["total_tokens"] = token_data
-            
-            # Extract request count
-            # Each send_task_to_white_agent call = 1 request
-            # For now, if response exists, count as 1 request
-            # Could be enhanced to track multiple internal API calls
-            if "result" in white_agent_response or "error" not in white_agent_response:
-                result["total_requests"] = 1
-            
-            # Check if request count is explicitly provided in metadata
-            if "result" in white_agent_response:
-                result_data = white_agent_response["result"]
-                if isinstance(result_data, dict) and "metadata" in result_data:
-                    metadata = result_data["metadata"]
-                    if isinstance(metadata, dict):
-                        if "request_count" in metadata:
-                            result["total_requests"] = metadata["request_count"]
-                        elif "num_requests" in metadata:
-                            result["total_requests"] = metadata["num_requests"]
-            
-            if result["total_tokens"] is not None:
-                self.logger.info(f"Extracted token count: {result['total_tokens']}")
-            if result["total_requests"] is not None:
-                self.logger.info(f"Extracted request count: {result['total_requests']}")
+                                return metadata["total_tokens"]
                 
         except Exception as e:
-            self.logger.warning(f"Failed to extract token/request counts from white agent response: {e}")
+            self.logger.warning(f"Failed to extract token count: {e}")
         
-        return result
+        return None

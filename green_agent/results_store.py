@@ -16,6 +16,7 @@ import threading
 class TaskResult:
     task_id: str
     attempt_id: int
+    success: bool  # True if task completed successfully (all tests passed)
     num_tokens: int
     num_turns: int
     passed_test_cases: int
@@ -97,15 +98,21 @@ class ResultsStore:
             return {
                 "model_id": model_id,
                 "total_tasks": 0,
+                "successful_tasks": 0,
+                "success_rate": 0.0,
                 "avg_accuracy": 0.0,
                 "avg_tokens": 0.0,
                 "avg_turns": 0.0,
                 "total_execution_time": 0.0
             }
         
+        successful_tasks = sum(1 for r in results if r.success)
+        
         return {
             "model_id": model_id,
             "total_tasks": len(results),
+            "successful_tasks": successful_tasks,
+            "success_rate": successful_tasks / len(results),
             "avg_accuracy": sum(r.accuracy for r in results) / len(results),
             "avg_tokens": sum(r.num_tokens for r in results) / len(results),
             "avg_turns": sum(r.num_turns for r in results) / len(results),

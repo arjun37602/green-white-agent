@@ -267,12 +267,16 @@ class GreenAgentTerminalBench:
                     # Convert TaskResult to TaskExecutionResult
                     cached_results.append(TaskExecutionResult(
                         task_id=cached_result.task_id,
-                        success=cached_result.accuracy > 0.0,
+                        success=cached_result.success,
                         execution_time=cached_result.execution_time,
                         evaluation_result=EvaluationResult(
-                            passed=cached_result.accuracy > 0.0,
-                            score=cached_result.accuracy,
-                            details=cached_result.metadata.get("evaluation_details", {}) if cached_result.metadata else {}
+                            task_id=cached_result.task_id,
+                            passed=cached_result.success,
+                            accuracy=cached_result.accuracy,
+                            passed_test_cases=cached_result.passed_test_cases,
+                            total_test_cases=cached_result.total_test_cases,
+                            details=cached_result.metadata.get("evaluation_details", {}) if cached_result.metadata else {},
+                            timestamp=cached_result.timestamp
                         ),
                         sandbox_id="cached",
                         white_agent_response={"cached": True},
@@ -336,7 +340,6 @@ class GreenAgentTerminalBench:
         
         # Track token usage
         total_tokens = 0
-        num_turns = 0
         
         self.logger.info(f"Starting task execution: {task_id} (model: {self.model_id})")
         
@@ -384,7 +387,6 @@ class GreenAgentTerminalBench:
             
             while not should_stop and iteration < max_iterations:
                 iteration += 1
-                num_turns += 1
                 self.logger.info(f"[{task_id}] Iteration {iteration}/{max_iterations}")
                 
                 # Call white agent
@@ -515,7 +517,9 @@ class GreenAgentTerminalBench:
                 if evaluation_result:
                     trajectory_data["evaluation"] = {
                         "passed": evaluation_result.passed,
-                        "score": evaluation_result.score,
+                        "accuracy": evaluation_result.accuracy,
+                        "passed_test_cases": evaluation_result.passed_test_cases,
+                        "total_test_cases": evaluation_result.total_test_cases,
                         "details": evaluation_result.details
                     }
             except Exception as e:
@@ -553,17 +557,20 @@ class GreenAgentTerminalBench:
             # Store in history
             self.execution_history.append(result)
             
-            # Save to ResultsStore
-            passed_tests = 1 if (evaluation_result and evaluation_result.passed) else 0
-            accuracy = evaluation_result.score if evaluation_result else 0.0
+            # Save to ResultsStore - extract metrics from evaluation result with defaults
+            success = getattr(evaluation_result, 'passed', False) if evaluation_result else False
+            passed_test_cases = getattr(evaluation_result, 'passed_test_cases', 0) if evaluation_result else 0
+            total_test_cases = getattr(evaluation_result, 'total_test_cases', 1) if evaluation_result else 1
+            accuracy = getattr(evaluation_result, 'accuracy', 0.0) if evaluation_result else 0.0
             
             task_result = TaskResult(
                 task_id=task_id,
                 attempt_id=1,  # For now, we don't support multiple attempts per task
+                success=success,
                 num_tokens=total_tokens,
-                num_turns=num_turns,
-                passed_test_cases=passed_tests,
-                total_test_cases=1,
+                num_turns=iteration,  # Use iteration count (same as num_turns)
+                passed_test_cases=passed_test_cases,
+                total_test_cases=total_test_cases,
                 accuracy=accuracy,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 execution_time=execution_time,
@@ -609,9 +616,12 @@ class GreenAgentTerminalBench:
             )
             
             # Save failed result to ResultsStore
+            # Note: iteration may not be defined if error happened before loop
+            num_turns = locals().get('iteration', 0)
             task_result = TaskResult(
                 task_id=task_id,
                 attempt_id=1,
+                success=False,
                 num_tokens=total_tokens,
                 num_turns=num_turns,
                 passed_test_cases=0,

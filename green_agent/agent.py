@@ -105,25 +105,28 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                 # Prepare summary of all results
                 total_tasks = len(all_results)
                 successful_tasks = sum(1 for r in all_results if r.success)
-                total_score = sum(r.evaluation_result.score if r.evaluation_result else 0.0 for r in all_results)
-                avg_score = total_score / total_tasks if total_tasks > 0 else 0.0
+                failed_tasks = total_tasks - successful_tasks
+                success_rate = successful_tasks / total_tasks if total_tasks > 0 else 0.0
+                total_accuracy = sum(r.evaluation_result.accuracy if r.evaluation_result else 0.0 for r in all_results)
+                avg_accuracy = total_accuracy / total_tasks if total_tasks > 0 else 0.0
                 total_execution_time = sum(r.execution_time for r in all_results)
                 
                 # Build detailed results message
                 results_summary = []
                 for result in all_results:
                     result_emoji = "SUCCESS" if result.success else "FAILURE"
-                    score = result.evaluation_result.score if result.evaluation_result else 0.0
+                    accuracy = result.evaluation_result.accuracy if result.evaluation_result else 0.0
                     results_summary.append(
-                        f"  {result.task_id}: {result_emoji} (Score: {score:.2f}, Time: {result.execution_time:.2f}s)"
+                        f"  {result.task_id}: {result_emoji} (Accuracy: {accuracy:.2f}, Time: {result.execution_time:.2f}s)"
                     )
                 
                 metrics = {
                     "time_used": time.time() - timestamp_started,
                     "total_tasks": total_tasks,
                     "successful_tasks": successful_tasks,
-                    "failed_tasks": total_tasks - successful_tasks,
-                    "average_score": avg_score,
+                    "failed_tasks": failed_tasks,
+                    "success_rate": success_rate,
+                    "average_accuracy": avg_accuracy,
                     "total_execution_time": total_execution_time
                 }
                 
@@ -133,9 +136,9 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                         f"Evaluation Complete!\n\n"
                         f"Summary:\n"
                         f"  Total Tasks: {total_tasks}\n"
-                        f"  Successful: {successful_tasks}\n"
-                        f"  Failed: {total_tasks - successful_tasks}\n"
-                        f"  Average Score: {avg_score:.2f}\n"
+                        f"  Successful: {successful_tasks} ({success_rate:.1%})\n"
+                        f"  Failed: {failed_tasks}\n"
+                        f"  Average Accuracy: {avg_accuracy:.2f}\n"
                         f"  Total Execution Time: {total_execution_time:.2f}s\n\n"
                         f"Task Results:\n" + "\n".join(results_summary) + "\n\n"
                         f"Metrics: {json.dumps(metrics, indent=2)}\n"
