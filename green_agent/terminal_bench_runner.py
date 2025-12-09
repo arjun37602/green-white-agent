@@ -715,29 +715,29 @@ class GreenAgentTerminalBench:
             tools_description = json.dumps(self.TOOLS, indent=2)
             task_message = f"""Terminal Bench Task: {task_id}
 
-Description: {task.category} task
+            Description: {task.category} task
 
-Instructions:
-You are a terminal agent that can execute bash commands.
-{task.instruction}
+            Instructions:
+            You are a terminal agent that can execute bash commands.
+            {task.instruction}
 
-Environment:
-Working Directory: /app
+            Environment:
+            Working Directory: /app
 
-You have access to the following tools:
-{tools_description}
+            You have access to the following tools:
+            {tools_description}
 
-Please respond in JSON format. Wrap your response in <json>...</json> tags.
-The JSON should contain:
-- "name": the tool name (e.g., "execute_bash_command" or "stop")
-- "kwargs": object with the tool arguments
+            Please respond in JSON format. Wrap your response in <json>...</json> tags.
+            The JSON should contain:
+            - "name": the tool name (e.g., "execute_bash_command" or "stop")
+            - "kwargs": object with the tool arguments
 
-Example response format:
-<json>
-{{"name": "execute_bash_command", "kwargs": {{"command": "ls -la"}}}}
-</json>
+            Example response format:
+            <json>
+            {{"name": "execute_bash_command", "kwargs": {{"command": "ls -la"}}}}
+            </json>
 
-Complete this task using the available tools."""
+            Complete this task using the available tools."""
             
             # Log the request
             self.logger.info(f"=== SENDING TO WHITE AGENT (INITIAL TASK) ===")

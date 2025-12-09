@@ -1,0 +1,44 @@
+{
+  "additionalInterfaces": null,
+  "capabilities": {
+    "extensions": null,
+    "pushNotifications": null,
+    "stateTransitionHistory": null,
+    "streaming": null
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "White agent for solving terminal bench tasks",
+  "documentationUrl": null,
+  "iconUrl": null,
+  "name": "terminal_bench_white_agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.3.0",
+  "provider": null,
+  "security": null,
+  "securitySchemes": null,
+  "signatures": null,
+  "skills": [
+    {
+      "description": "Handles user requests and completes tasks using tools",
+      "examples": [],
+      "id": "task_fulfillment",
+      "inputModes": null,
+      "name": "Task Fulfillment",
+      "outputModes": null,
+      "security": null,
+      "tags": [
+        "general",
+        "terminal",
+        "tools"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": null,
+  "url": "https://",
+  "version": "1.0.0"
+}

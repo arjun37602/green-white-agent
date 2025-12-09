@@ -60,6 +60,35 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         self.ctx_id_to_messages = {}  # Maintain history per context_id
         self.ctx_id_to_tokens = {}  # Track cumulative tokens per context_id
         self.logger = logging.getLogger(__name__)
+        # chain of thought, todo list prompt
+        self.system_prompt = """You are an expert terminal task solver. When given a task:
+
+            1. Read the task description carefully
+            2. Understand the environment and constraints
+            3. Plan your approach before acting. For long running tasks, create a todo list and track your progress to ensure you don't miss any steps and remain on track.
+            3a. Before taking action, think step-by-step:
+                - What is the goal?
+                - What information do I need?
+                - What's the best approach?
+                - What could go wrong?
+            4. Use the execute_bash_command tool to run commands
+            5. Verify your work before calling stop
+
+            IMPORTANT:
+            - Always use tools, never output raw bash commands as text
+            - Check command outputs before proceeding
+            - If a command fails, analyze why and adjust
+            - Be efficient: minimize unnecessary commands
+            - Call stop() when task is complete
+
+            Example 1:
+            Task: Find all .log files in /tmp
+            Action: execute_bash_command(command="find /tmp -name '*.log'")
+            Result: /tmp/app.log, /tmp/error.log
+            Action: stop()
+            
+            """
+
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         # Get user input from context
@@ -69,7 +98,8 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         if context.context_id not in self.ctx_id_to_messages:
             self.ctx_id_to_messages[context.context_id] = []
             self.ctx_id_to_tokens[context.context_id] = 0
-        
+            self.ctx_id_to_messages[context.context_id].append({"role": "system", "content": self.system_prompt})
+
         messages = self.ctx_id_to_messages[context.context_id]
         
         # Add user input to message history
@@ -109,12 +139,10 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             new_agent_text_message(
                 assistant_content,
                 context_id=context.context_id,
-                metadata={
-                    "completion_tokens": completion_tokens,
-                    "cumulative_tokens": cumulative_tokens
-                }
             )
         )
+        self.logger.info(f"Tokens: {completion_tokens} completion, {cumulative_tokens} cumulative")
+
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         raise NotImplementedError
