@@ -15,6 +15,7 @@ import threading
 @dataclass
 class TaskResult:
     task_id: str
+    model_id: str  # Model being evaluated (e.g., "gpt-5", "claude-3")
     attempt_id: int
     success: bool  # True if task completed successfully (all tests passed)
     num_tokens: int

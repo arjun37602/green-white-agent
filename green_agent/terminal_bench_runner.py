@@ -278,8 +278,8 @@ class GreenAgentTerminalBench:
                             details=cached_result.metadata.get("evaluation_details", {}) if cached_result.metadata else {},
                             timestamp=cached_result.timestamp
                         ),
-                        sandbox_id="cached",
-                        white_agent_response={"cached": True},
+                        sandbox_id=f"cached-{cached_result.model_id}",
+                        white_agent_response={"cached": True, "model_id": cached_result.model_id},
                         timestamp=cached_result.timestamp
                     ))
             else:
@@ -565,6 +565,7 @@ class GreenAgentTerminalBench:
             
             task_result = TaskResult(
                 task_id=task_id,
+                model_id=self.model_id,
                 attempt_id=1,  # For now, we don't support multiple attempts per task
                 success=success,
                 num_tokens=total_tokens,
@@ -577,7 +578,6 @@ class GreenAgentTerminalBench:
                 message_history=trajectory_data["interactions"],
                 metadata={
                     "evaluation_details": evaluation_result.details if evaluation_result else {},
-                    "model_id": self.model_id,
                     "task_category": task.category,
                     "task_difficulty": task.difficulty.value
                 }
@@ -620,6 +620,7 @@ class GreenAgentTerminalBench:
             num_turns = locals().get('iteration', 0)
             task_result = TaskResult(
                 task_id=task_id,
+                model_id=self.model_id,
                 attempt_id=1,
                 success=False,
                 num_tokens=total_tokens,
@@ -631,8 +632,7 @@ class GreenAgentTerminalBench:
                 execution_time=execution_time,
                 message_history=trajectory_data.get("interactions", []),
                 metadata={
-                    "error": str(e),
-                    "model_id": self.model_id
+                    "error": str(e)
                 }
             )
             self.results_store.save_result(self.model_id, task_result)
