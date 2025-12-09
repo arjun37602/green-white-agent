@@ -105,9 +105,11 @@ class GreenAgentTerminalBench:
                  terminal_bench_dataset_path: Optional[str] = None,
                  model_id: str = "default_model",
                  results_dir: str = "./results",
-                 max_parallel_tasks: int = 5):
+                 max_parallel_tasks: int = 5,
+                 max_attempts: int = 1):
         self.white_agent_url = white_agent_url
         self.model_id = model_id
+        self.max_attempts = max_attempts
         self.logger = logging.getLogger(__name__)
         
         # Initialize results store for caching
@@ -240,7 +242,7 @@ class GreenAgentTerminalBench:
                                               output_directory: Path) -> List[TaskExecutionResult]:
         """
         Execute multiple tasks in parallel with semaphore-based rate limiting.
-        Checks cache before execution and skips already completed tasks.
+        Checks cache and skips tasks that have reached max_attempts.
         
         Args:
             task_tuples: List of (Task, TaskPaths) tuples
@@ -249,9 +251,9 @@ class GreenAgentTerminalBench:
         Returns:
             List of TaskExecutionResult objects
         """
-        # Check cache and filter out completed tasks
-        completed_task_ids = self.results_store.load_completed_tasks(self.model_id)
-        self.logger.info(f"Found {len(completed_task_ids)} completed tasks in cache for model {self.model_id}")
+        # Check cache and filter out tasks that reached max_attempts
+        completed_task_ids = self.results_store.load_completed_tasks(self.model_id, self.max_attempts)
+        self.logger.info(f"Found {len(completed_task_ids)} fully attempted tasks (>= {self.max_attempts} attempts) for model {self.model_id}")
         
         tasks_to_run = []
         cached_results = []
@@ -259,10 +261,12 @@ class GreenAgentTerminalBench:
         for task, task_paths in task_tuples:
             task_id = task_paths.input_path.name
             if task_id in completed_task_ids:
-                self.logger.info(f"Task {task_id} already completed, loading from cache")
-                # Load cached result
+                self.logger.info(f"Task {task_id} already has {self.max_attempts}+ attempts, loading from cache")
+                # Load cached result (use most recent)
                 all_results = self.results_store.load_all_results(self.model_id)
-                cached_result = next((r for r in all_results if r.task_id == task_id), None)
+                task_results = [r for r in all_results if r.task_id == task_id]
+                cached_result = task_results[-1] if task_results else None
+                
                 if cached_result:
                     # Convert TaskResult to TaskExecutionResult
                     cached_results.append(TaskExecutionResult(
@@ -279,13 +283,15 @@ class GreenAgentTerminalBench:
                             timestamp=cached_result.timestamp
                         ),
                         sandbox_id=f"cached-{cached_result.model_id}",
-                        white_agent_response={"cached": True, "model_id": cached_result.model_id},
+                        white_agent_response={"cached": True, "model_id": cached_result.model_id, "attempts": len(task_results)},
                         timestamp=cached_result.timestamp
                     ))
+                else:
+                    tasks_to_run.append((task, task_paths))
             else:
                 tasks_to_run.append((task, task_paths))
         
-        self.logger.info(f"Running {len(tasks_to_run)} tasks (skipped {len(cached_results)} cached)")
+        self.logger.info(f"Running {len(tasks_to_run)} tasks (skipped {len(cached_results)} cached with {self.max_attempts}+ attempts)")
         
         # Execute tasks in parallel with semaphore
         async def execute_with_semaphore(task: Task, task_paths: TaskPaths):
@@ -389,25 +395,29 @@ class GreenAgentTerminalBench:
                 iteration += 1
                 self.logger.info(f"[{task_id}] Iteration {iteration}/{max_iterations}")
                 
+                # Initialize interaction for this iteration
+                interaction = {
+                    "iteration": iteration,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                
                 # Call white agent
                 try:
                     if iteration == 1:
                         # First iteration: send initial task with tool definitions
                         self.logger.info(f"[{task_id}] Sending initial task with tool definitions")
-                        white_agent_response, interaction = await self.send_initial_task(task, task_paths, context_id, current_container)
+                        white_agent_response, initial_interaction = await self.send_initial_task(task, task_paths, context_id, current_container)
+                        # Merge initial interaction data
+                        interaction.update(initial_interaction)
                         trajectory_data["interactions"].append(interaction) #add initial task
                     else:
                         # Subsequent iterations: send tool results or error
                         if previous_tool_results is None or len(previous_tool_results) == 0:
                             # White agent didn't send tool calls - send error
                             self.logger.warning(f"[{task_id}] White agent did not send tool calls in previous iteration")
-                            interaction = {
-                                "iteration": iteration,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                                "user": {
-                                    "type": "error",
-                                    "error_message": "You must send a tool command"
-                                }
+                            interaction["user"] = {
+                                "type": "error",
+                                "error_message": "You must send a tool command"
                             }
                             trajectory_data["interactions"].append(interaction) #add error
                             white_agent_response = await self.send_tool_results(
@@ -428,17 +438,15 @@ class GreenAgentTerminalBench:
                                 total_tokens = metadata["cumulative_tokens"]
                                 self.logger.debug(f"[{task_id}] Token usage: {total_tokens} cumulative")
                     
-                    # Log white agent response
-                    interaction = {
-                        "iteration": iteration,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                    interaction["assistant"] = white_agent_response
-                    trajectory_data["interactions"].append(interaction) #add assistant response
+                    # Log white agent response (only if not iteration 1, since already logged above)
+                    if iteration > 1:
+                        interaction["assistant"] = white_agent_response
+                        trajectory_data["interactions"].append(interaction) #add assistant response
                     
                 except Exception as e:
                     self.logger.error(f"[{task_id}] Error communicating with white agent: {e}")
                     self.logger.warning(f"[{task_id}] Breaking loop due to white agent error")
+                    # interaction is already defined at the start of the loop
                     interaction["error"] = str(e)
                     trajectory_data["interactions"].append(interaction)
                     break
@@ -563,10 +571,13 @@ class GreenAgentTerminalBench:
             total_test_cases = getattr(evaluation_result, 'total_test_cases', 1) if evaluation_result else 1
             accuracy = getattr(evaluation_result, 'accuracy', 0.0) if evaluation_result else 0.0
             
+            # Get current attempt count for this task
+            current_attempt = self.results_store.get_attempt_count(self.model_id, task_id) + 1
+            
             task_result = TaskResult(
                 task_id=task_id,
                 model_id=self.model_id,
-                attempt_id=1,  # For now, we don't support multiple attempts per task
+                attempt_id=current_attempt,
                 success=success,
                 num_tokens=total_tokens,
                 num_turns=iteration,  # Use iteration count (same as num_turns)
@@ -847,9 +858,17 @@ Complete this task using the available tools."""
                 self.logger.debug(f"White agent initial response received")
                 return result, interaction
             else:
+                # Handle error response from white agent
                 error_msg = f"Unexpected response type from white agent: {type(res_root)}"
-                self.logger.error(error_msg)
-                raise Exception(error_msg)
+                if hasattr(res_root, 'error'):
+                    error_details = res_root.error
+                    self.logger.error(f"{error_msg}")
+                    self.logger.error(f"Error details from white agent: {error_details}")
+                    raise Exception(f"White agent error: {error_details}")
+                else:
+                    self.logger.error(f"{error_msg}")
+                    self.logger.error(f"Response object: {res_root}")
+                    raise Exception(error_msg)
                 
         except Exception as e:
             self.logger.error(f"Failed to send initial task to white agent: {e}")
@@ -972,9 +991,15 @@ Complete this task using the available tools."""
                 self.logger.debug(f"White agent follow-up response received")
                 return result
             else:
+                # Handle error response from white agent
                 error_msg = f"Unexpected response type from white agent: {type(res_root)}"
-                self.logger.error(error_msg)
-                raise Exception(error_msg)
+                if hasattr(res_root, 'error'):
+                    error_details = res_root.error
+                    self.logger.error(f"{error_msg} - Error details: {error_details}")
+                    raise Exception(f"{error_msg}: {error_details}")
+                else:
+                    self.logger.error(f"{error_msg} - Response: {res_root}")
+                    raise Exception(error_msg)
                 
         except Exception as e:
             self.logger.error(f"Failed to send tool results to white agent: {e}")

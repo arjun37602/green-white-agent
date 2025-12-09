@@ -78,6 +78,7 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
             model_id = task_config.get("model_id", "default_model")
             results_dir = task_config.get("results_dir", "./results")
             max_parallel_tasks = task_config.get("max_parallel_tasks", 5)
+            max_attempts = task_config.get("max_attempts", 1)
             
             # Create terminal bench runner
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -87,7 +88,8 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                     terminal_bench_dataset_path=dataset_path,
                     model_id=model_id,
                     results_dir=results_dir,
-                    max_parallel_tasks=max_parallel_tasks
+                    max_parallel_tasks=max_parallel_tasks,
+                    max_attempts=max_attempts
                 )
                 
                 # Load tasks

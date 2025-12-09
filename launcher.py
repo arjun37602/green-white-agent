@@ -12,7 +12,7 @@ from white_agent import start_white_agent
 from utils import send_message, wait_agent_ready
 
 
-async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results", max_parallel_tasks=5):
+async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results", max_parallel_tasks=5, max_attempts=1):
     """
     Launch evaluation with configurable settings.
     
@@ -21,6 +21,7 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
         task_ids: List of task IDs to evaluate (None = all tasks, [] = default to ["hello-world"])
         results_dir: Directory for JSONL results and outputs (default: "./results")
         max_parallel_tasks: Maximum number of parallel tasks (default: 5)
+        max_attempts: Maximum attempts per task before caching (default: 1)
     """
     # Don't override None here - let it pass through to load all tasks
     # Only set default if it's an empty list (which shouldn't happen, but be safe)
@@ -99,7 +100,8 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
         "output_directory": str(run_output_dir),  # Run-specific: sessions, agent-logs
         "model_id": model,
         "results_dir": str(results_base),  # Stable: JSONL cache
-        "max_parallel_tasks": max_parallel_tasks
+        "max_parallel_tasks": max_parallel_tasks,
+        "max_attempts": max_attempts
     }
     task_text = f"""
 Your task is to evaluate the white agent located at:
@@ -212,6 +214,12 @@ if __name__ == "__main__":
         default=5,
         help="Maximum number of parallel tasks. Default: 5"
     )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=1,
+        help="Maximum attempts per task before caching (allows retries). Default: 1"
+    )
     
     args = parser.parse_args()
     
@@ -226,6 +234,7 @@ if __name__ == "__main__":
         model=args.model, 
         task_ids=task_ids, 
         results_dir=args.results_dir,
-        max_parallel_tasks=args.max_parallel_tasks
+        max_parallel_tasks=args.max_parallel_tasks,
+        max_attempts=args.max_attempts
     ))
 

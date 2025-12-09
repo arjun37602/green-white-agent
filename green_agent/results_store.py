@@ -43,24 +43,56 @@ class ResultsStore:
         safe_model_id = model_id.replace('/', '_').replace('\\', '_')
         return self.results_dir / f"{safe_model_id}.jsonl"
     
-    def load_completed_tasks(self, model_id: str) -> Set[str]:
-        """Load set of completed task_ids for a model (for caching)"""
+    def load_completed_tasks(self, model_id: str, max_attempts: int = 1) -> Set[str]:
+        """
+        Load set of completed task_ids for a model (for caching).
+        Only returns tasks that have reached max_attempts.
+        
+        Args:
+            model_id: Model identifier
+            max_attempts: Maximum number of attempts before considering task "done"
+            
+        Returns:
+            Set of task_ids that have >= max_attempts attempts
+        """
         model_file = self.get_model_file(model_id)
-        completed = set()
+        attempt_counts = {}  # task_id -> count
         
         if not model_file.exists():
-            return completed
+            return set()
         
         try:
             with open(model_file, 'r') as f:
                 for line in f:
                     if line.strip():
                         result = json.loads(line)
-                        completed.add(result['task_id'])
+                        task_id = result['task_id']
+                        attempt_counts[task_id] = attempt_counts.get(task_id, 0) + 1
         except Exception as e:
             print(f"Warning: Error loading completed tasks for {model_id}: {e}")
         
-        return completed
+        # Return tasks that have reached max_attempts
+        return {task_id for task_id, count in attempt_counts.items() if count >= max_attempts}
+    
+    def get_attempt_count(self, model_id: str, task_id: str) -> int:
+        """Get the number of attempts for a specific task"""
+        model_file = self.get_model_file(model_id)
+        count = 0
+        
+        if not model_file.exists():
+            return count
+        
+        try:
+            with open(model_file, 'r') as f:
+                for line in f:
+                    if line.strip():
+                        result = json.loads(line)
+                        if result['task_id'] == task_id:
+                            count += 1
+        except Exception as e:
+            print(f"Warning: Error counting attempts for {task_id}: {e}")
+        
+        return count
     
     def save_result(self, model_id: str, result: TaskResult) -> None:
         """Append a result to the model's JSONL file (thread-safe)"""
