@@ -28,6 +28,9 @@ pip-log.txt
 *.swo
 *~
 
+# AgentBeats
+.ab/
+
 # OS
 .DS_Store
 .DS_Store?

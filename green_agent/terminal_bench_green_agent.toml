@@ -5,10 +5,6 @@ version = "1.0.0"
 defaultInputModes = ["text/plain"]
 defaultOutputModes = ["text/plain"]
 
-[provider]
-organization = "Terminal Bench Green Agent"
-url = "http://localhost:9001"
-
 [[skills]]
 id = "task_evaluation"
 name = "Task Evaluation"
