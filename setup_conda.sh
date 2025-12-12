@@ -4,7 +4,7 @@ set -e
 
 ENV_NAME="green-white-agent"
 
-echo "Creating conda environment with Python 3.12..."
+echo "Creating conda environment with Python 3.13..."
 # Remove existing environment if it exists
 if conda env list | grep -q "^${ENV_NAME} "; then
     echo "Removing existing conda environment: ${ENV_NAME}"
@@ -12,7 +12,7 @@ if conda env list | grep -q "^${ENV_NAME} "; then
 fi
 
 # Create new conda environment
-conda create -n "${ENV_NAME}" python=3.12 -y
+conda create -n "${ENV_NAME}" python=3.13 -y
 
 echo ""
 echo "Activating conda environment..."
@@ -43,7 +43,7 @@ else
     echo "Warning: terminal-bench import test failed (expected due to broken imports)"
 fi
 
-if python -c "import sys; import os; sp = os.path.join(sys.prefix, 'lib', 'python3.12', 'site-packages', 'terminal_bench'); print('Found' if os.path.exists(sp) else 'Not found')" 2>/dev/null | grep -q "Found"; then
+if python -c "import sys; import os; sp = os.path.join(sys.prefix, 'lib', 'python3.13', 'site-packages', 'terminal_bench'); print('Found' if os.path.exists(sp) else 'Not found')" 2>/dev/null | grep -q "Found"; then
     echo "terminal-bench found in site-packages"
 else
     echo "Could not verify terminal-bench location (but installation may have succeeded)"
