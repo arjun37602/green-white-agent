@@ -77,7 +77,7 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
             output_directory = Path(task_config.get("output_directory", "results"))
             model_id = task_config.get("model_id", "default_model")
             results_dir = task_config.get("results_dir", "./results")
-            max_parallel_tasks = task_config.get("max_parallel_tasks", 5)
+            max_parallel_tasks = task_config.get("max_parallel_tasks", 40)
             max_attempts = task_config.get("max_attempts", 1)
             
             # Create terminal bench runner
@@ -167,7 +167,7 @@ def start_green_agent(agent_name="terminal_bench_green_agent", host="localhost",
     agent_card_dict = load_agent_card_toml(agent_name)
     
     # Use public URL from environment if available (for AgentBeats/ngrok)
-    base_url = os.getenv("AGENT_PUBLIC_URL", f"http://{host}:{port}")
+    base_url = os.getenv("AGENT_URL")
     agent_card_dict["url"] = base_url  # complete all required card fields
 
     request_handler = DefaultRequestHandler(
