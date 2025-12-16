@@ -72,8 +72,8 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
             import tempfile
             
             # Extract config
-            task_ids = task_config["task_ids"]
-            dataset_path = Path(task_config["dataset_path"])
+            task_ids = task_config.get("task_ids", None)
+            dataset_path = Path(task_config.get("dataset_path", "data/tasks"))
             output_directory = Path(task_config.get("output_directory", "results"))
             model_id = task_config.get("model_id", "default_model")
             results_dir = task_config.get("results_dir", "./results")
@@ -96,7 +96,7 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                 task_tuples = tb_runner.load_terminal_bench_tasks(task_ids)
                 
                 if not task_tuples:
-                    raise ValueError(f"No tasks found for: {task_ids}")
+                    raise ValueError(f"No tasks found")
                 
                 # Execute all tasks in parallel with caching
                 all_results = await tb_runner.execute_multiple_tasks_parallel(task_tuples, output_directory)
