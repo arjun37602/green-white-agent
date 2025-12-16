@@ -16,8 +16,6 @@ if [ -z "$OPENAI_API_KEY" ]; then
     exit 1
 fi
 
-export AGENT_PUBLIC_URL="https://${CLOUDRUN_HOST}"
-
 # Add project root to PYTHONPATH
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 
