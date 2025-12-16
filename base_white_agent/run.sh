@@ -22,4 +22,4 @@ export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH}"
 # Change to project root before running
 cd "${PROJECT_ROOT}"
 
-python -c "from white_agent.agent import start_white_agent; start_white_agent(host='${HOST:-0.0.0.0}', port=${AGENT_PORT:-8001})"
+python -c "from base_white_agent.agent import start_white_agent; start_white_agent(host='${HOST:-0.0.0.0}', port=${AGENT_PORT:-8001})"

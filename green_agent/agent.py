@@ -179,34 +179,8 @@ def start_green_agent(agent_name="terminal_bench_green_agent", host="localhost",
         agent_card=AgentCard(**agent_card_dict),
         http_handler=request_handler,
     )
-    
-    # Build the Starlette app
-    starlette_app = app.build()
-    
-    # Add .well-known/agent-card.json endpoint for AgentBeats compatibility
-    from starlette.responses import JSONResponse
-    from starlette.routing import Route
-    
-    agent_card = AgentCard(**agent_card_dict)
-    
-    async def get_agent_card_json(request):
-        return JSONResponse(agent_card.model_dump(mode='json', exclude_none=True))
 
-    async def get_agent_status(request):
-        return JSONResponse({"status": "healthy"})
-
-    # Add the agent card route with .json extension
-    starlette_app.routes.append(
-        Route("/.well-known/agent-card.json", get_agent_card_json, methods=["GET"])
-    )
-    starlette_app.routes.append(
-        Route("/.well-known/agent-card", get_agent_card_json, methods=["GET"])
-    )
-    starlette_app.routes.append(
-        Route("/status", get_agent_status, methods=["GET"])
-    )
-
-    uvicorn.run(starlette_app, host=host, port=port)
+    uvicorn.run(app.build(), host=host, port=port)
 
 
 if __name__ == "__main__":

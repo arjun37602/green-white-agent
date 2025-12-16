@@ -4,8 +4,6 @@ import uvicorn
 import dotenv
 import logging
 import os
-import json
-import re
 import uuid
 from pathlib import Path
 from a2a.server.apps import A2AStarletteApplication
@@ -153,48 +151,8 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
         agent_card=card,
         http_handler=request_handler,
     )
-    
-    # Build the Starlette app
-    starlette_app = app.build()
-    
-    # Add endpoints for AgentBeats compatibility
-    from starlette.responses import JSONResponse
-    from starlette.routing import Route
-    
-    async def get_agent_card_json(request):
-        return JSONResponse(card.model_dump(mode='json', exclude_none=True))
 
-    async def get_agent_status(request):
-        return JSONResponse({
-            "status": "healthy",
-            "agent": agent_name,
-            "version": "1.0.0"
-        })
-
-    async def get_trajectories(request):
-        """Return all message histories (trajectories) from the white agent."""
-        # Access the executor's message histories
-        trajectories = executor.ctx_id_to_messages.copy()
-        return JSONResponse({
-            "trajectories": trajectories,
-            "context_ids": list(trajectories.keys())
-        })
-
-    # Add the agent card routes with and without .json extension
-    starlette_app.routes.append(
-        Route("/.well-known/agent-card.json", get_agent_card_json, methods=["GET"])
-    )
-    starlette_app.routes.append(
-        Route("/.well-known/agent-card", get_agent_card_json, methods=["GET"])
-    )
-    starlette_app.routes.append(
-        Route("/status", get_agent_status, methods=["GET"])
-    )
-    starlette_app.routes.append(
-        Route("/trajectories", get_trajectories, methods=["GET"])
-    )
-
-    uvicorn.run(starlette_app, host=host, port=port)
+    uvicorn.run(app.build(), host=host, port=port)
 
 
 if __name__ == "__main__":
