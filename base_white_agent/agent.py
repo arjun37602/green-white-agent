@@ -4,6 +4,7 @@ import uvicorn
 import dotenv
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from a2a.server.apps import A2AStarletteApplication
@@ -27,6 +28,20 @@ if not os.getenv("OPENAI_API_KEY"):
     )
 
 logger = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = """You are a helpful assistant that can interact with a terminal.
+
+Structure your responses as:
+
+<reasoning>
+Your thought process and analysis here.
+</reasoning>
+
+<answer>
+Your response here (follow the format the user provides).
+</answer>
+
+"""
 
 
 def prepare_white_agent_card(url):
@@ -67,7 +82,9 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             
             # Initialize or get message history for this context
             if context.context_id not in self.ctx_id_to_messages:
-                self.ctx_id_to_messages[context.context_id] = []
+                self.ctx_id_to_messages[context.context_id] = [
+                    {"role": "system", "content": SYSTEM_PROMPT}
+                ]
                 self.ctx_id_to_tokens[context.context_id] = 0
             
             messages = self.ctx_id_to_messages[context.context_id]
