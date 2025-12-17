@@ -92,7 +92,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             # Add user input to message history
             messages.append({"role": "user", "content": user_input})
             
-            # Call LLM asynchronously with retry logic (3 total tries, 2 retries)
+            # Call LLM asynchronously (1 try, no retries)
             api_params = {
                 "model": self.model,
                 "messages": messages,

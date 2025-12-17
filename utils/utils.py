@@ -20,9 +20,12 @@ from a2a.types import (
 
 
 def parse_tags(str_with_tags: str) -> Dict[str, str]:
-    """the target str contains tags in the format of <tag_name> ... </tag_name>, parse them out and return a dict"""
-    tags = re.findall(r"<(.*?)>(.*?)</\1>", str_with_tags, re.DOTALL)
-    return {tag: content.strip() for tag, content in tags}
+    """Parse <json>...</json> tags specifically"""
+    # Only look for <json> tags specifically to avoid false matches
+    json_match = re.search(r"<json>(.*?)</json>", str_with_tags, re.DOTALL)
+    if json_match:
+        return {"json": json_match.group(1).strip()}
+    return {}
 
 
 async def get_agent_card(url: str) -> AgentCard | None:
