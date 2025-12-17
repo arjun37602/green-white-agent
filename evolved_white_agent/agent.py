@@ -228,7 +228,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 - Things already covered in the system prompt
                 - Suggestions that only apply to one narrow situation
 
-                If no generalizable improvements are found, respond with "No generalizable improvements identified."
+                If no generalizable improvements are found, respond with "N/A"
                 
                 Format your response as a bullet list of actionable guidelines, starting each with "- ". Keep it concise.
                 
@@ -237,6 +237,11 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 Example response:
                 <improvements>
                 - Install Python packages with 'pip install <package>' before importing them in scripts
+                </improvements>
+                
+                Example response if no improvements are found:
+                <improvements>
+                N/A
                 </improvements>
             """
 
@@ -253,10 +258,11 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             improvements = improvements_match.group(1).strip() if improvements_match else ""
             
             # Append improvements to system prompt
-            if improvements.strip() and improvements.lower() != "no generalizable improvements identified.":
+            if improvements.strip() and improvements != "N/A":
                 self.system_prompt += f"\n\n=== LEARNED FROM EXPERIENCE ===\n{improvements.strip()}\n"
                 self.logger.info(f"System prompt improved for context {context_id}. Added:\n{improvements.strip()}")
                 
+                assert messages[0]["user"] == "system", "The first message should be the system prompt"
                 # Update the system message in history
                 messages[0]["content"] = self.system_prompt
                 
