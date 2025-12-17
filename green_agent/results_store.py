@@ -43,17 +43,17 @@ class ResultsStore:
         safe_model_id = model_id.replace('/', '_').replace('\\', '_')
         return self.results_dir / f"{safe_model_id}.jsonl"
     
-    def load_completed_tasks(self, model_id: str, max_attempts: int = 1) -> Set[str]:
+    def load_completed_tasks(self, model_id: str, target_attempts: int = 1) -> Set[str]:
         """
         Load set of completed task_ids for a model (for caching).
-        Only returns tasks that have reached max_attempts.
+        Only returns tasks that have reached target number of attempts.
         
         Args:
             model_id: Model identifier
-            max_attempts: Maximum number of attempts before considering task "done"
+            target_attempts: Target number of attempts per task
             
         Returns:
-            Set of task_ids that have >= max_attempts attempts
+            Set of task_ids that have >= target_attempts attempts
         """
         model_file = self.get_model_file(model_id)
         attempt_counts = {}  # task_id -> count
@@ -71,8 +71,8 @@ class ResultsStore:
         except Exception as e:
             print(f"Warning: Error loading completed tasks for {model_id}: {e}")
         
-        # Return tasks that have reached max_attempts
-        return {task_id for task_id, count in attempt_counts.items() if count >= max_attempts}
+        # Return tasks that have reached target attempts
+        return {task_id for task_id, count in attempt_counts.items() if count >= target_attempts}
     
     def get_attempt_count(self, model_id: str, task_id: str) -> int:
         """Get the number of attempts for a specific task"""

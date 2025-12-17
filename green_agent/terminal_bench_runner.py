@@ -106,10 +106,10 @@ class GreenAgentTerminalBench:
                  model_id: str = "default_model",
                  results_dir: str = "./results",
                  max_parallel_tasks: int = 5,
-                 max_attempts: int = 1):
+                 attempts: int = 1):
         self.white_agent_url = white_agent_url
         self.model_id = model_id
-        self.max_attempts = max_attempts
+        self.attempts = attempts
         self.logger = logging.getLogger(__name__)
         
         # Initialize results store for caching
@@ -242,7 +242,7 @@ class GreenAgentTerminalBench:
                                               output_directory: Path) -> List[TaskExecutionResult]:
         """
         Execute multiple tasks in parallel with semaphore-based rate limiting.
-        Checks cache and skips tasks that have reached max_attempts.
+        Checks cache and skips tasks that already have the target number of attempts.
         
         Args:
             task_tuples: List of (Task, TaskPaths) tuples
@@ -251,17 +251,19 @@ class GreenAgentTerminalBench:
         Returns:
             List of TaskExecutionResult objects
         """
-        # Check cache and filter out tasks that reached max_attempts
-        completed_task_ids = self.results_store.load_completed_tasks(self.model_id, self.max_attempts)
-        self.logger.info(f"Found {len(completed_task_ids)} fully attempted tasks (>= {self.max_attempts} attempts) for model {self.model_id}")
+        # Check cache and determine how many attempts needed per task
+        self.logger.info(f"Checking cache for attempts needed (target: {self.attempts} per task)")
         
-        tasks_to_run = []
+        tasks_to_run = []  # Will contain (task, task_paths, attempt_number) tuples
         cached_results = []
         
         for task, task_paths in task_tuples:
             task_id = task_paths.input_path.name
-            if task_id in completed_task_ids:
-                self.logger.info(f"Task {task_id} already has {self.max_attempts}+ attempts, loading from cache")
+            current_attempts = self.results_store.get_attempt_count(self.model_id, task_id)
+            attempts_needed = max(0, self.attempts - current_attempts)
+            
+            if attempts_needed == 0:
+                self.logger.info(f"Task {task_id} already has {current_attempts}/{self.attempts} attempts, loading from cache")
                 # Load cached result (use most recent)
                 all_results = self.results_store.load_all_results(self.model_id)
                 task_results = [r for r in all_results if r.task_id == task_id]
@@ -286,21 +288,25 @@ class GreenAgentTerminalBench:
                         white_agent_response={"cached": True, "model_id": cached_result.model_id, "attempts": len(task_results)},
                         timestamp=cached_result.timestamp
                     ))
-                else:
-                    tasks_to_run.append((task, task_paths))
             else:
-                tasks_to_run.append((task, task_paths))
+                # Create separate task entries for each attempt needed
+                self.logger.info(f"Task {task_id} needs {attempts_needed} more attempts ({current_attempts}/{self.attempts} cached)")
+                for attempt_num in range(attempts_needed):
+                    tasks_to_run.append((task, task_paths, current_attempts + attempt_num + 1))
         
-        self.logger.info(f"Running {len(tasks_to_run)} tasks (skipped {len(cached_results)} cached with {self.max_attempts}+ attempts)")
+        total_task_ids = len(set(tp.input_path.name for _, tp, _ in tasks_to_run))
+        self.logger.info(f"Running {len(tasks_to_run)} attempts across {total_task_ids} tasks (skipped {len(cached_results)} fully cached tasks)")
         
         # Execute tasks in parallel with semaphore
-        async def execute_with_semaphore(task: Task, task_paths: TaskPaths):
+        async def execute_with_semaphore(task: Task, task_paths: TaskPaths, attempt_num: int):
             async with self.task_semaphore:
+                task_id = task_paths.input_path.name
+                self.logger.info(f"[Worker] Starting {task_id} attempt {attempt_num}")
                 return await self.execute_task_with_sandbox(task, task_paths, output_directory)
         
-        # Run all tasks in parallel
+        # Run all attempts in parallel (each attempt is a separate asyncio task)
         new_results = await asyncio.gather(
-            *[execute_with_semaphore(task, task_paths) for task, task_paths in tasks_to_run],
+            *[execute_with_semaphore(task, task_paths, attempt_num) for task, task_paths, attempt_num in tasks_to_run],
             return_exceptions=True
         )
         

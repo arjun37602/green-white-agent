@@ -73,13 +73,13 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
             
             # Extract config
             task_ids = task_config.get("task_ids", None)
-            dataset_path = Path(task_config.get("dataset_path", "data/tasks"))
-            output_directory = Path(task_config.get("output_directory", "results"))
-            model_id = task_config.get("model_id", "default_model")
-            results_dir = task_config.get("results_dir", "./results")
-            max_parallel_tasks = task_config.get("max_parallel_tasks", 5)
-            max_attempts = task_config.get("max_attempts", 1)
-            limit = task_config.get("limit", None)
+            dataset_path = Path.home() / ".cache" / "terminal-bench" / "terminal-bench-core" / "0.1.1"
+            output_directory = Path(task_config.get("output_directory", "results_base_ab/"))
+            model_id = task_config.get("model_id", "gpt-5-nano")
+            results_dir = task_config.get("results_dir", "./results_base_ab")
+            max_parallel_tasks = task_config.get("max_parallel_tasks", 20)
+            attempts = task_config.get("attempts", 1)
+            limit = task_config.get("limit", 80)
             
             # Create terminal bench runner
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -90,7 +90,7 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                     model_id=model_id,
                     results_dir=results_dir,
                     max_parallel_tasks=max_parallel_tasks,
-                    max_attempts=max_attempts
+                    attempts=attempts
                 )
                 
                 # Load tasks
