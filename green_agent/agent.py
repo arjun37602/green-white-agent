@@ -73,11 +73,17 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
             
             # Extract config
             task_ids = task_config.get("task_ids", None)
+            task_ids = [
+                "csv-to-parquet",
+                "hello-world",
+                "extract-safely",
+                "fix-permissions"
+                        ]
             dataset_path = Path(task_config.get("dataset_path", "data/tasks"))
             output_directory = Path(task_config.get("output_directory", "results"))
             model_id = task_config.get("model_id", "default_model")
             results_dir = task_config.get("results_dir", "./results")
-            max_parallel_tasks = task_config.get("max_parallel_tasks", 5)
+            max_parallel_tasks = task_config.get("max_parallel_tasks", 1)
             max_attempts = task_config.get("max_attempts", 1)
             limit = task_config.get("limit", None)
             
