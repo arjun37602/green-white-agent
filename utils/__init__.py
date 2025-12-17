@@ -7,6 +7,7 @@ This module re-exports commonly used helpers so callers can simply do:
 
 from .utils import (
     parse_tags,
+    parse_answer,
     get_agent_card,
     wait_agent_ready,
     send_message,
@@ -14,6 +15,7 @@ from .utils import (
 
 __all__ = [
     "parse_tags",
+    "parse_answer",
     "get_agent_card",
     "wait_agent_ready",
     "send_message",
