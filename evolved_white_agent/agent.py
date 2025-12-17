@@ -57,6 +57,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         self.model = model
         self.ctx_id_to_messages = {}  # Maintain history per context_id
         self.ctx_id_to_tokens = {}  # Track token usage per context_id
+        self.ctx_id_to_turn_count = {}  # Track turns for reflection trigger
         self.logger = logging.getLogger(__name__)
          # chain of thought, todo list prompt
         self.system_prompt = """You are an expert terminal task solver with exceptional problem-solving abilities.
@@ -192,6 +193,59 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             Now await your task and solve it expertly.
         """
 
+    async def _reflect_and_improve_prompt(self, context_id: str) -> None:
+        """Analyze recent interactions and improve the system prompt."""
+        try:
+            messages = self.ctx_id_to_messages.get(context_id, [])
+            
+            # Get last 20 messages (excluding system prompt) for reflection
+            recent_messages = messages[1:21] if len(messages) > 1 else []
+            
+            if len(recent_messages) < 4:  # Need at least some history
+                return
+            
+            # Format message history for reflection
+            history_text = "\n".join([
+                f"{msg['role'].upper()}: {msg['content'][:500]}"  # Truncate long messages
+                for msg in recent_messages
+            ])
+            
+            # Meta-prompt for reflection
+            reflection_prompt = f"""Analyze this agent's recent interactions and identify patterns of inefficiency or repeated mistakes:
+
+                {history_text}
+
+                Based on these interactions, suggest 2-3 SHORT, CONCRETE rules or guidelines (max 1-2 sentences each) that should be added to the agent's system prompt to help it perform better.
+
+                Focus on:
+                - Recurring errors or inefficiencies (e.g., forgetting to install dependencies, not checking prerequisites)
+                - Time-wasting behaviors (e.g., running commands unnecessarily)
+                - Missing knowledge that would help (e.g., "always pip install before running python scripts")
+
+                Format your response as a bullet list of actionable guidelines, starting each with "- ". Keep it concise.
+            """
+
+            # Make reflection API call
+            reflection_response = await acompletion(
+                model="gpt-5-nano",
+                messages=[{"role": "user", "content": reflection_prompt}],
+                temperature=0.0,
+            )
+            
+            improvements = reflection_response.choices[0].message.content or ""
+            
+            # Append improvements to system prompt
+            if improvements.strip():
+                self.system_prompt += f"\n\n=== LEARNED FROM EXPERIENCE ===\n{improvements.strip()}\n"
+                self.logger.info(f"System prompt improved for context {context_id}. Added:\n{improvements.strip()}")
+                
+                # Update the system message in history
+                messages[0]["content"] = self.system_prompt
+                
+        except Exception as e:
+            self.logger.warning(f"Reflection failed for context {context_id}: {e}")
+            # Don't fail the main execution if reflection fails
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         try:
             # Get user input from context
@@ -204,8 +258,18 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                     {"role": "system", "content": self.system_prompt}
                 ]
                 self.ctx_id_to_tokens[context.context_id] = 0
+                self.ctx_id_to_turn_count[context.context_id] = 0
             
             messages = self.ctx_id_to_messages[context.context_id]
+            
+            # Increment turn counter
+            self.ctx_id_to_turn_count[context.context_id] += 1
+            turn_count = self.ctx_id_to_turn_count[context.context_id]
+            
+            # Trigger reflection every 10 turns
+            if turn_count % 10 == 0:
+                self.logger.info(f"Triggering reflection at turn {turn_count} for context {context.context_id}")
+                await self._reflect_and_improve_prompt(context.context_id)
             
             # Add user input to message history
             messages.append({"role": "user", "content": user_input})
