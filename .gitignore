@@ -76,3 +76,4 @@ logs/
 /white_agent/venv.local*
 /white_agent/env.local.local*
 /white_agent/venv.local.local*
+data/
