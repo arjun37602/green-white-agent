@@ -805,9 +805,9 @@ Complete this task using the available tools."""
                 # Parse tool calls from <json>...</json> tags (tau-bench format)
                 tool_calls_list = []
                 try:
-                    tags = parse_tags(assistant_text)
-                    if "json" in tags:
-                        json_content = tags["json"].strip()
+                    from utils import parse_answer
+                    json_content = parse_answer(assistant_text)
+                    if json_content:
                         self.logger.info(f"Parsing JSON content: {json_content}")
                         
                         # Try to parse the JSON, if it fails due to extra closing braces, strip them
@@ -947,9 +947,9 @@ Complete this task using the available tools."""
                 # Parse tool calls from <json>...</json> tags (tau-bench format)
                 tool_calls_list = []
                 try:
-                    tags = parse_tags(assistant_text)
-                    if "json" in tags:
-                        json_content = tags["json"].strip()
+                    from utils import parse_answer
+                    json_content = parse_answer(assistant_text)
+                    if json_content:
                         self.logger.info(f"Parsing JSON content: {json_content}")
                         
                         # Try to parse the JSON, if it fails due to extra closing braces, strip them
