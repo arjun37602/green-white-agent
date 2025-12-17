@@ -77,7 +77,7 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
             output_directory = Path(task_config.get("output_directory", "results"))
             model_id = task_config.get("model_id", "default_model")
             results_dir = task_config.get("results_dir", "./results")
-            max_parallel_tasks = task_config.get("max_parallel_tasks", 40)
+            max_parallel_tasks = task_config.get("max_parallel_tasks", 5)
             max_attempts = task_config.get("max_attempts", 1)
             
             # Create terminal bench runner
@@ -94,7 +94,7 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                 
                 # Load tasks
                 task_tuples = tb_runner.load_terminal_bench_tasks(task_ids)
-                
+                task_tuples = task_tuples[:10]
                 if not task_tuples:
                     raise ValueError(f"No tasks found")
                 

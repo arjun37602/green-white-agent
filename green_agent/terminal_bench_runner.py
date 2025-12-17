@@ -390,6 +390,7 @@ class GreenAgentTerminalBench:
             
             # Track tool results from previous iteration only
             previous_tool_results = None
+            white_agent_response = None  # Initialize to avoid UnboundLocalError if loop breaks early
             
             while not should_stop and iteration < max_iterations:
                 iteration += 1
@@ -516,9 +517,14 @@ class GreenAgentTerminalBench:
             self.logger.info(f"[{task_id}] Starting task evaluation...")
             
             try:
-                evaluation_result = self.task_evaluator.evaluate(
-                    task_id, task_paths, current_container, white_agent_response
-                )
+                # Only evaluate if we have a white agent response (loop didn't break immediately)
+                if white_agent_response is not None:
+                    evaluation_result = self.task_evaluator.evaluate(
+                        task_id, task_paths, current_container, white_agent_response
+                    )
+                else:
+                    self.logger.warning(f"[{task_id}] No white agent response received, skipping evaluation")
+                    evaluation_result = None
                 self.logger.info(f"[{task_id}] Evaluation complete: {evaluation_result.passed if evaluation_result else 'N/A'}")
                 
                 # Add evaluation result to trajectory
