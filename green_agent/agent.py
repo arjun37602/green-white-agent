@@ -79,6 +79,7 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
             results_dir = task_config.get("results_dir", "./results")
             max_parallel_tasks = task_config.get("max_parallel_tasks", 5)
             max_attempts = task_config.get("max_attempts", 1)
+            limit = task_config.get("limit", None)
             
             # Create terminal bench runner
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -94,7 +95,9 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                 
                 # Load tasks
                 task_tuples = tb_runner.load_terminal_bench_tasks(task_ids)
-                task_tuples = task_tuples[:10]
+                # Apply limit if specified
+                if limit is not None:
+                    task_tuples = task_tuples[:limit]
                 if not task_tuples:
                     raise ValueError(f"No tasks found")
                 

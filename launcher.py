@@ -12,7 +12,7 @@ from white_agent import start_white_agent
 from utils import send_message, wait_agent_ready
 
 
-async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results", max_parallel_tasks=5, max_attempts=1):
+async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results", max_parallel_tasks=5, max_attempts=1, limit=None):
     """
     Launch evaluation with configurable settings.
     
@@ -22,6 +22,7 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
         results_dir: Directory for JSONL results and outputs (default: "./results")
         max_parallel_tasks: Maximum number of parallel tasks (default: 5)
         max_attempts: Maximum attempts per task before caching (default: 1)
+        limit: Limit the number of tasks to run (None = all tasks)
     """
     # Don't override None here - let it pass through to load all tasks
     # Only set default if it's an empty list (which shouldn't happen, but be safe)
@@ -101,7 +102,8 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
         "model_id": model,
         "results_dir": str(results_base),  # Stable: JSONL cache
         "max_parallel_tasks": max_parallel_tasks,
-        "max_attempts": max_attempts
+        "max_attempts": max_attempts,
+        "limit": limit
     }
     task_text = f"""
 Your task is to evaluate the white agent located at:
@@ -220,6 +222,12 @@ if __name__ == "__main__":
         default=1,
         help="Maximum attempts per task before caching (allows retries). Default: 1"
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit the number of tasks to run (e.g., 80 for first 80 tasks). Default: None (all tasks)"
+    )
     
     args = parser.parse_args()
     
@@ -235,6 +243,7 @@ if __name__ == "__main__":
         task_ids=task_ids, 
         results_dir=args.results_dir,
         max_parallel_tasks=args.max_parallel_tasks,
-        max_attempts=args.max_attempts
+        max_attempts=args.max_attempts,
+        limit=args.limit
     ))
 

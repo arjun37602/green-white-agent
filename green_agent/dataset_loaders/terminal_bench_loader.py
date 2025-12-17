@@ -5,6 +5,7 @@ Terminal-Bench Task Loader
 This module loads and parses Terminal-Bench tasks using the official Terminal Bench Dataset class.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -21,6 +22,7 @@ class TerminalBenchTaskLoader:
     def __init__(self, dataset_path: str):
         """
         Initialize the loader with a Terminal-Bench dataset path.
+        Auto-downloads dataset if not present.
         
         Args:
             dataset_path: Path to the Terminal-Bench dataset directory
@@ -29,12 +31,43 @@ class TerminalBenchTaskLoader:
         self.logger = logging.getLogger(__name__)
         
         if not self.dataset_path.exists():
-            raise ValueError(f"Dataset path does not exist: {dataset_path}")
+            self.logger.warning(f"Dataset path does not exist: {dataset_path}")
+            self.logger.info("Attempting to auto-download Terminal-Bench dataset...")
+            
+            try:
+                # Try to auto-download by initializing Dataset with name and version
+                # This will download to default cache location
+                self.dataset = Dataset(name="terminal-bench-core", version="0.1.1")
+                self.dataset_path = self.dataset.config.path
+                self.logger.info(f"Auto-downloaded dataset to: {self.dataset_path}")
+            except Exception as e:
+                raise ValueError(
+                    f"Dataset path does not exist: {dataset_path}\n"
+                    f"Auto-download failed: {e}\n"
+                    f"Please download manually with: python -c 'from terminal_bench.dataset.dataset import Dataset; Dataset(name=\"terminal-bench-core\", version=\"0.1.1\")'"
+                )
+        else:
+            # Initialize Terminal Bench Dataset with local path
+            self.dataset = Dataset(path=self.dataset_path)
         
-        # Initialize Terminal Bench Dataset with local path
-        self.dataset = Dataset(path=self.dataset_path)
+        # Try to load cached task names for efficiency
+        self._cached_task_names = self._load_cached_task_names()
         
         self.logger.info(f"TerminalBenchTaskLoader initialized with dataset path: {self.dataset_path}")
+    
+    def _load_cached_task_names(self) -> Optional[List[str]]:
+        """Load cached task names if available."""
+        cache_file = Path(__file__).parent.parent / "task_names_cache.json"
+        if cache_file.exists():
+            try:
+                with open(cache_file, "r") as f:
+                    cache_data = json.load(f)
+                    task_names = cache_data.get("task_ids", [])
+                    self.logger.info(f"Loaded {len(task_names)} cached task names")
+                    return task_names
+            except Exception as e:
+                self.logger.warning(f"Failed to load cached task names: {e}")
+        return None
     
     def load_task(self, task_id: str) -> tuple[TBTask, TaskPaths]:
         """
@@ -68,7 +101,6 @@ class TerminalBenchTaskLoader:
         
         Args:
             task_ids: Optional list of specific task IDs to load
-            limit: Optional limit on number of tasks to load
             
         Returns:
             List of (Task, TaskPaths) tuples
@@ -84,16 +116,25 @@ class TerminalBenchTaskLoader:
                 except Exception as e:
                     self.logger.error(f"Failed to load task {task_id}: {e}")
         else:
-            # Load all tasks in dataset
-            for task_path in self.dataset:
-                try:
-                    task_id = task_path.name
-                    task, task_paths = self.load_task(task_id)
-                    tasks.append((task, task_paths))
-                    
-                        
-                except Exception as e:
-                    self.logger.error(f"Failed to load task {task_path.name}: {e}")
+            # Load all tasks - use cached names if available for efficiency
+            if self._cached_task_names:
+                self.logger.info(f"Using cached task names ({len(self._cached_task_names)} tasks)")
+                for task_id in self._cached_task_names:
+                    try:
+                        task, task_paths = self.load_task(task_id)
+                        tasks.append((task, task_paths))
+                    except Exception as e:
+                        self.logger.error(f"Failed to load task {task_id}: {e}")
+            else:
+                # Fallback: iterate through dataset
+                self.logger.info("No cached task names, iterating through dataset")
+                for task_path in self.dataset:
+                    try:
+                        task_id = task_path.name
+                        task, task_paths = self.load_task(task_id)
+                        tasks.append((task, task_paths))
+                    except Exception as e:
+                        self.logger.error(f"Failed to load task {task_path.name}: {e}")
         
         self.logger.info(f"Loaded {len(tasks)} Terminal-Bench tasks from dataset")
         return tasks
