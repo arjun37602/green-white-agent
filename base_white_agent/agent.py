@@ -101,7 +101,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             if "gpt-5" not in self.model:
                 api_params["temperature"] = 0.0
             
-            max_api_tries = 3
+            max_api_tries = 1
             last_api_error = None
             response = None
             

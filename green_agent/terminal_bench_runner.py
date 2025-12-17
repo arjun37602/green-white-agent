@@ -350,8 +350,11 @@ class GreenAgentTerminalBench:
         self.logger.info(f"Starting task execution: {task_id} (model: {self.model_id})")
         
         # Container names - add random suffix for parallel execution
-        container_name = f"tbench_{task_id.replace('-', '_')}_{int(time.time())}_{uuid.uuid4().hex[:6]}_client"
-        image_name = f"tbench_{task_id.replace('-', '_')}_image"
+        # Sanitize task_id for Docker: replace dots and invalid chars with underscores
+        # Docker Compose project names must be lowercase alphanumeric, hyphens, and underscores only
+        sanitized_task_id = task_id.replace('-', '_').replace('.', '_').replace('/', '_').lower()
+        container_name = f"tbench_{sanitized_task_id}_{int(time.time())}_{uuid.uuid4().hex[:6]}_client"
+        image_name = f"tbench_{sanitized_task_id}_image"
         
         sessions_logs_path = output_directory / "sessions"
         agent_logs_path = output_directory / "agent-logs"
@@ -363,7 +366,7 @@ class GreenAgentTerminalBench:
             client_container_name=container_name,
             client_image_name=image_name,
             docker_compose_path=task_paths.docker_compose_path,
-            docker_image_name_prefix=f"tbench_{task_id}",
+            docker_image_name_prefix=f"tbench_{sanitized_task_id}",
             no_rebuild=False,
             cleanup=True,
             sessions_logs_path=sessions_logs_path,
@@ -374,34 +377,11 @@ class GreenAgentTerminalBench:
         current_container = None
         
         try:
-            # Start container with retry logic (Docker builds can fail transiently)
-            max_docker_retries = 3
-            container = None
-            last_error = None
-            
-            for attempt in range(max_docker_retries):
-                try:
-                    self.logger.info(f"Starting Docker container for task {task_id} (attempt {attempt + 1}/{max_docker_retries})")
-                    container = container_manager.start()
-                    current_container = container
-                    self.logger.info(f"✅ Container started: {container.name}")
-                    break  # Success
-                except Exception as docker_error:
-                    last_error = docker_error
-                    error_msg = str(docker_error)
-                    self.logger.error(f"❌ Docker build/start failed (attempt {attempt + 1}/{max_docker_retries}):")
-                    self.logger.error(f"   Error: {error_msg}")
-                    
-                    if attempt < max_docker_retries - 1:
-                        self.logger.info(f"   Retrying in 3 seconds...")
-                        time.sleep(3)
-                    else:
-                        self.logger.error(f"   All {max_docker_retries} attempts failed. Docker error details:")
-                        self.logger.error(f"   {error_msg}")
-                        raise RuntimeError(f"Docker build failed after {max_docker_retries} attempts: {error_msg}")
-            
-            if container is None:
-                raise RuntimeError(f"Failed to start container after {max_docker_retries} attempts")
+            # Start container
+            self.logger.info(f"Starting Docker container for task {task_id}")
+            container = container_manager.start()
+            current_container = container
+            self.logger.info(f"Container started: {container.name}")
             
             # Iteratively call white agent until task complete or max iterations reached
             max_iterations = 50
