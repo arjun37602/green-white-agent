@@ -114,7 +114,7 @@ class TerminalBenchTaskLoader:
                     task, task_paths = self.load_task(task_id)
                     tasks.append((task, task_paths))
                 except Exception as e:
-                    self.logger.error(f"Failed to load task {task_id}: {e}")
+                    self.logger.warning(f"Task {task_id} not found in dataset, skipping: {e}")
         else:
             # Load all tasks - use cached names if available for efficiency
             if self._cached_task_names:
@@ -124,7 +124,7 @@ class TerminalBenchTaskLoader:
                         task, task_paths = self.load_task(task_id)
                         tasks.append((task, task_paths))
                     except Exception as e:
-                        self.logger.error(f"Failed to load task {task_id}: {e}")
+                        self.logger.debug(f"Task {task_id} not in dataset, skipping")
             else:
                 # Fallback: iterate through dataset
                 self.logger.info("No cached task names, iterating through dataset")
@@ -134,7 +134,11 @@ class TerminalBenchTaskLoader:
                         task, task_paths = self.load_task(task_id)
                         tasks.append((task, task_paths))
                     except Exception as e:
-                        self.logger.error(f"Failed to load task {task_path.name}: {e}")
+                        self.logger.debug(f"Task {task_path.name} not in dataset, skipping")
         
-        self.logger.info(f"Loaded {len(tasks)} Terminal-Bench tasks from dataset")
+        if self._cached_task_names and len(tasks) < len(self._cached_task_names):
+            skipped = len(self._cached_task_names) - len(tasks)
+            self.logger.info(f"Loaded {len(tasks)} Terminal-Bench tasks from dataset ({skipped} tasks not found in current dataset)")
+        else:
+            self.logger.info(f"Loaded {len(tasks)} Terminal-Bench tasks from dataset")
         return tasks

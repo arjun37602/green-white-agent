@@ -8,7 +8,7 @@ from pathlib import Path
 from datetime import datetime
 import httpx
 from green_agent import start_green_agent
-from white_agent import start_white_agent
+from base_white_agent import start_white_agent
 from utils import send_message, wait_agent_ready
 
 
@@ -95,9 +95,14 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
     print("Sending task description to green agent...")
     # Pass None through to load all tasks, or pass the list of specific task IDs
     # None means all tasks, list means specific tasks
+    
+    # Get Terminal Bench dataset path (use cache location for complete dataset)
+    tb_cache_path = Path.home() / ".cache" / "terminal-bench" / "terminal-bench-core" / "0.1.1"
+    dataset_path = str(tb_cache_path) if tb_cache_path.exists() else "data/tasks"
+    
     task_config = {
         "task_ids": task_ids,  # None = all tasks, list = specific tasks
-        "dataset_path": "data/tasks",
+        "dataset_path": dataset_path,
         "output_directory": str(run_output_dir),  # Run-specific: sessions, agent-logs
         "model_id": model,
         "results_dir": str(results_base),  # Stable: JSONL cache
@@ -122,8 +127,7 @@ You should use the following task configuration:
     print("Response from green agent:")
     print(response)
 
-    # Fetch trajectories from white agent before terminating
-    print("\nFetching trajectories from white agent...")
+    # Fetch trajectories from white agent before terminating (optional, only for evolved agent)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             trajectories_response = await client.get(f"{white_url}/trajectories")
@@ -135,12 +139,16 @@ You should use the following task configuration:
                 trajectories_file = run_output_dir / "trajectories.json"
                 with open(trajectories_file, "w") as f:
                     json.dump(trajectories, f, indent=2)
-                print(f"Saved trajectories to {trajectories_file}")
-                print(f"Found {len(trajectories)} context IDs with message histories")
+                print(f"\n✅ Saved trajectories to {trajectories_file}")
+                print(f"   Found {len(trajectories)} context IDs with message histories")
+            elif trajectories_response.status_code == 404:
+                # Base agent doesn't have trajectories endpoint, that's fine
+                pass
             else:
-                print(f"Warning: Failed to fetch trajectories (status {trajectories_response.status_code})")
+                print(f"\n⚠️  Warning: Failed to fetch trajectories (status {trajectories_response.status_code})")
     except Exception as e:
-        print(f"Warning: Failed to fetch trajectories: {e}")
+        # Silently ignore trajectory fetch errors (not critical)
+        pass
 
     # Save evaluation summary
     # Convert response to dict if it has model_dump, otherwise use string representation

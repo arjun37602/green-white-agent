@@ -170,7 +170,8 @@ def start_green_agent(agent_name="terminal_bench_green_agent", host="localhost",
     agent_card_dict = load_agent_card_toml(agent_name)
     
     # Use public URL from environment if available (for AgentBeats/ngrok)
-    base_url = os.getenv("AGENT_URL")
+    # Otherwise use local URL for local execution
+    base_url = os.getenv("AGENT_URL") or f"http://{host}:{port}"
     agent_card_dict["url"] = base_url  # complete all required card fields
 
     request_handler = DefaultRequestHandler(

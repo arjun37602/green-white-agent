@@ -374,11 +374,34 @@ class GreenAgentTerminalBench:
         current_container = None
         
         try:
-            # Start container
-            self.logger.info(f"Starting Docker container for task {task_id}")
-            container = container_manager.start()
-            current_container = container
-            self.logger.info(f"Container started: {container.name}")
+            # Start container with retry logic (Docker builds can fail transiently)
+            max_docker_retries = 3
+            container = None
+            last_error = None
+            
+            for attempt in range(max_docker_retries):
+                try:
+                    self.logger.info(f"Starting Docker container for task {task_id} (attempt {attempt + 1}/{max_docker_retries})")
+                    container = container_manager.start()
+                    current_container = container
+                    self.logger.info(f"✅ Container started: {container.name}")
+                    break  # Success
+                except Exception as docker_error:
+                    last_error = docker_error
+                    error_msg = str(docker_error)
+                    self.logger.error(f"❌ Docker build/start failed (attempt {attempt + 1}/{max_docker_retries}):")
+                    self.logger.error(f"   Error: {error_msg}")
+                    
+                    if attempt < max_docker_retries - 1:
+                        self.logger.info(f"   Retrying in 3 seconds...")
+                        time.sleep(3)
+                    else:
+                        self.logger.error(f"   All {max_docker_retries} attempts failed. Docker error details:")
+                        self.logger.error(f"   {error_msg}")
+                        raise RuntimeError(f"Docker build failed after {max_docker_retries} attempts: {error_msg}")
+            
+            if container is None:
+                raise RuntimeError(f"Failed to start container after {max_docker_retries} attempts")
             
             # Iteratively call white agent until task complete or max iterations reached
             max_iterations = 50

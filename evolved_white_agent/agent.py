@@ -273,7 +273,8 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
     print(f"Starting white agent with model={model}...")
     
     # Use public URL from environment if available (for AgentBeats/ngrok)
-    base_url = os.getenv("AGENT_URL")
+    # Otherwise use local URL for local execution
+    base_url = os.getenv("AGENT_URL") or f"http://{host}:{port}"
     card = prepare_white_agent_card(base_url)
 
     executor = TerminalBenchWhiteAgentExecutor(model=model)

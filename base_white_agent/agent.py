@@ -92,7 +92,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             # Add user input to message history
             messages.append({"role": "user", "content": user_input})
             
-            # Call LLM asynchronously (no native tool calling - just text)
+            # Call LLM asynchronously with retry logic (3 total tries, 2 retries)
             api_params = {
                 "model": self.model,
                 "messages": messages,
@@ -101,8 +101,28 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             if "gpt-5" not in self.model:
                 api_params["temperature"] = 0.0
             
-            self.logger.debug(f"Calling LLM with model={self.model}")
-            response = await acompletion(**api_params)
+            max_api_tries = 3
+            last_api_error = None
+            response = None
+            
+            for api_attempt in range(max_api_tries):
+                try:
+                    self.logger.debug(f"Calling LLM with model={self.model} (attempt {api_attempt + 1}/{max_api_tries})")
+                    response = await acompletion(**api_params)
+                    break  # Success, exit retry loop
+                except Exception as api_error:
+                    last_api_error = api_error
+                    if api_attempt < max_api_tries - 1:
+                        self.logger.warning(f"LLM API call failed (attempt {api_attempt + 1}/{max_api_tries}): {api_error}")
+                        import asyncio
+                        await asyncio.sleep(2)  # Brief pause before retry
+                    else:
+                        self.logger.error(f"LLM API call failed after {max_api_tries} attempts: {api_error}")
+                        raise last_api_error
+            
+            if response is None:
+                raise RuntimeError(f"Failed to get LLM response after {max_api_tries} attempts")
+            
             assistant_message = response.choices[0].message
             assistant_content = assistant_message.content or ""
             
@@ -155,7 +175,8 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
     print(f"Starting white agent with model={model}...")
     
     # Use public URL from environment if available (for AgentBeats/ngrok)
-    base_url = os.getenv("AGENT_URL")
+    # Otherwise use local URL for local execution
+    base_url = os.getenv("AGENT_URL") or f"http://{host}:{port}"
     card = prepare_white_agent_card(base_url)
 
     executor = TerminalBenchWhiteAgentExecutor(model=model)
