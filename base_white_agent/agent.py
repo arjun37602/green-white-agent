@@ -33,13 +33,13 @@ SYSTEM_PROMPT = """You are a helpful assistant that can interact with a terminal
 
 Structure your responses as:
 
-<reasoning>
+=== REASONING ===
 Your thought process and analysis here.
-</reasoning>
+=== END REASONING ===
 
-<answer>
-Your response here (follow the format the user provides).
-</answer>
+=== ANSWER===
+Your response here and nothing else (follow the format the user provides).
+=== END ANSWER ===
 
 """
 
