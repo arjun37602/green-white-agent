@@ -257,7 +257,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 
             # Make reflection API call
             reflection_response = await acompletion(
-                model="gpt-5-nano",
+                model=model,
                 messages=[{"role": "user", "content": reflection_prompt}],
                 temperature=0.0,
             )
