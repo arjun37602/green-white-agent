@@ -9,12 +9,10 @@ from pathlib import Path
 def analyze_results(jsonl_file, output_file=None):
     """Calculate average metrics from JSON results file."""
     
-    # Read all results (handle both JSONL and concatenated JSON objects)
     results = []
     with open(jsonl_file, 'r') as f:
         content = f.read()
     
-    # Split on }{ pattern to separate concatenated JSON objects
     json_objects = content.replace('}\n{', '}\n===SPLIT===\n{').split('===SPLIT===')
     
     for obj_str in json_objects:
@@ -23,14 +21,12 @@ def analyze_results(jsonl_file, output_file=None):
             try:
                 results.append(json.loads(obj_str))
             except json.JSONDecodeError:
-                # Skip invalid JSON
                 continue
     
     if not results:
         print("No results found in file")
         return
     
-    # Calculate averages
     total = len(results)
     avg_accuracy = sum(r['accuracy'] for r in results) / total
     avg_score = sum(1 if r['success'] else 0 for r in results) / total
@@ -38,7 +34,6 @@ def analyze_results(jsonl_file, output_file=None):
     avg_time = sum(r['execution_time'] for r in results) / total
     avg_turns = sum(r['num_turns'] for r in results) / total
     
-    # Format output
     output = f"""Terminal Bench Results Analysis
 {'='*50}
 Total Tasks: {total}
@@ -51,10 +46,8 @@ Average Metrics:
   Turns per Task:     {avg_turns:.1f}
 """
     
-    # Print to terminal
     print(output)
     
-    # Write to file if specified
     if output_file:
         with open(output_file, 'w') as f:
             f.write(output)

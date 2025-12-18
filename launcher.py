@@ -8,11 +8,10 @@ from pathlib import Path
 from datetime import datetime
 import httpx
 from green_agent import start_green_agent
-from evolved_white_agent import start_white_agent
 from utils import send_message, wait_agent_ready
 
 
-async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results", max_parallel_tasks=5, max_attempts=1, limit=None):
+async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results", max_parallel_tasks=5, max_attempts=1, limit=None, agent_type="evolved"):
     """
     Launch evaluation with configurable settings.
     
@@ -23,6 +22,7 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
         max_parallel_tasks: Maximum number of parallel tasks (default: 5)
         max_attempts: Maximum attempts per task before caching (default: 1)
         limit: Limit the number of tasks to run (None = all tasks)
+        agent_type: Type of white agent to use ("evolved" or "basic") (default: "evolved")
     """
     # Don't override None here - let it pass through to load all tasks
     # Only set default if it's an empty list (which shouldn't happen, but be safe)
@@ -93,11 +93,20 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
     print("Green agent is ready.")
 
     # start white agent
-    print(f"Launching white agent with model={model}...")
+    print(f"Launching white agent ({agent_type}) with model={model}...")
     white_port = find_free_port(9011)
     white_address = ("localhost", white_port)
     white_url = f"http://{white_address[0]}:{white_address[1]}"
     print(f"White agent port: {white_port}")
+    
+    # Import the appropriate white agent based on agent_type
+    if agent_type == "evolved":
+        from evolved_white_agent import start_white_agent
+    elif agent_type == "basic":
+        from base_white_agent import start_white_agent
+    else:
+        raise ValueError(f"Invalid agent_type: {agent_type}. Must be 'evolved' or 'basic'")
+    
     p_white = multiprocessing.Process(
         target=start_white_agent, 
         args=("terminal_bench_white_agent", *white_address),
@@ -252,6 +261,13 @@ if __name__ == "__main__":
         default=None,
         help="Limit the number of tasks to run (e.g., 80 for first 80 tasks). Default: None (all tasks)"
     )
+    parser.add_argument(
+        "--agent",
+        type=str,
+        default="evolved",
+        choices=["evolved", "basic"],
+        help="Type of white agent to use: 'evolved' (with reflection) or 'basic' (simple). Default: evolved"
+    )
     
     args = parser.parse_args()
     
@@ -268,6 +284,7 @@ if __name__ == "__main__":
         results_dir=args.results_dir,
         max_parallel_tasks=args.max_parallel_tasks,
         max_attempts=args.max_attempts,
-        limit=args.limit
+        limit=args.limit,
+        agent_type=args.agent
     ))
 

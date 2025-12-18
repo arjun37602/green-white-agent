@@ -51,7 +51,6 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
         self.terminal_bench_dataset_path = terminal_bench_dataset_path
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        # Parse the task from user input
         logger.info("Green agent: Received a task, parsing...")
         user_input = context.get_user_input()
         tags = parse_tags(user_input)
@@ -62,33 +61,14 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
         logger.info(f"Green agent: White agent URL: {white_agent_url}")
         logger.info(f"Green agent: Task config: {task_config}")
         
-        # Load and execute Terminal Bench tasks
         logger.info("Green agent: Starting Terminal Bench evaluation...")
         timestamp_started = time.time()
         
         try:
-            # Import the terminal bench runner
             from green_agent.terminal_bench_runner import GreenAgentTerminalBench
             import tempfile
             
-            # Extract config
             task_ids = task_config.get("task_ids", None)
-            task_ids = [
-                "count-dataset-tokens",
-                "create-bucket",
-                "csv-to-parquet",
-                "extract-safely",
-                "fix-permissions",
-                "git-workflow-hack",
-                "grid-pattern-transform",
-                "hello-world",
-                "modernize-fortran-build",
-                "processing-pipeline",
-                "blind-maze-explorer-algorithm",
-                "crack-7z-hash",
-                "oom",
-                "play-zork",
-            ]
             dataset_path = Path(task_config.get("dataset_path", "data/tasks"))
             output_directory = Path(task_config.get("output_directory", "results_base_agentbeats"))
             model_id = task_config.get("model_id", "gpt-5-nano")
@@ -97,7 +77,6 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
             max_attempts = task_config.get("max_attempts", 1)
             limit = task_config.get("limit", None)
             
-            # Create terminal bench runner
             with tempfile.TemporaryDirectory() as temp_dir:
                 tb_runner = GreenAgentTerminalBench(
                     white_agent_url=white_agent_url,
@@ -109,21 +88,16 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                     max_attempts=max_attempts
                 )
                 
-                # Load tasks
                 task_tuples = tb_runner.load_terminal_bench_tasks(task_ids)
-                # Apply limit if specified
                 if limit is not None:
                     task_tuples = task_tuples[:limit]
                 if not task_tuples:
                     raise ValueError(f"No tasks found")
                 
-                # Execute all tasks in parallel with caching
                 all_results = await tb_runner.execute_multiple_tasks_parallel(task_tuples, output_directory)
                 
-                # Cleanup
                 tb_runner.cleanup_resources()
                 
-                # Prepare summary of all results
                 total_tasks = len(all_results)
                 successful_tasks = sum(1 for r in all_results if r.success)
                 failed_tasks = total_tasks - successful_tasks
@@ -132,7 +106,6 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                 avg_accuracy = total_accuracy / total_tasks if total_tasks > 0 else 0.0
                 total_execution_time = sum(r.execution_time for r in all_results)
                 
-                # Build detailed results message
                 results_summary = []
                 for result in all_results:
                     result_emoji = "SUCCESS" if result.success else "FAILURE"
@@ -185,10 +158,8 @@ def start_green_agent(agent_name="terminal_bench_green_agent", host="localhost",
     print("Starting green agent...")
     agent_card_dict = load_agent_card_toml(agent_name)
     
-    # Use public URL from environment if available (for AgentBeats/ngrok)
-    # Otherwise use local URL for local execution
     base_url = os.getenv("AGENT_URL") or f"http://{host}:{port}"
-    agent_card_dict["url"] = base_url  # complete all required card fields
+    agent_card_dict["url"] = base_url
 
     request_handler = DefaultRequestHandler(
         agent_executor=TerminalBenchGreenAgentExecutor(),

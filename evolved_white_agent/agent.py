@@ -218,7 +218,6 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 for msg in messages
             ])
             
-            # Meta-prompt for reflection
             reflection_prompt = f"""Analyze this agent's recent interactions and identify patterns of inefficiency or repeated mistakes:
 
                 {history_text}
@@ -255,7 +254,6 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 </improvements>
             """
 
-            # Make reflection API call
             reflection_response = await acompletion(
                 model=model,
                 messages=[{"role": "user", "content": reflection_prompt}],
@@ -267,26 +265,21 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             improvements_match = re.search(r'<improvements>\s*(.*?)\s*</improvements>', raw_response, re.DOTALL)
             improvements = improvements_match.group(1).strip() if improvements_match else ""
             
-            # Append improvements to system prompt
             if improvements.strip() and improvements != "N/A":
                 self.system_prompt += f"\n\n=== LEARNED FROM EXPERIENCE ===\n{improvements.strip()}\n"
                 self.logger.info(f"System prompt improved for context {context_id}. Added:\n{improvements.strip()}")
                 
-                assert messages[0]["user"] == "system", "The first message should be the system prompt"
-                # Update the system message in history
+                assert messages[0]["role"] == "system", "The first message should be the system prompt"
                 messages[0]["content"] = self.system_prompt
                 
         except Exception as e:
             self.logger.warning(f"Reflection failed for context {context_id}: {e}")
-            # Don't fail the main execution if reflection fails
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         try:
-            # Get user input from context
             user_input = context.get_user_input()
             self.logger.debug(f"White agent received input for context {context.context_id}: {user_input[:100]}...")
             
-            # Initialize or get message history for this context
             if context.context_id not in self.ctx_id_to_messages:
                 self.ctx_id_to_messages[context.context_id] = [
                     {"role": "system", "content": self.system_prompt}
@@ -296,19 +289,15 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             
             messages = self.ctx_id_to_messages[context.context_id]
             
-            # Increment turn counter
             self.ctx_id_to_turn_count[context.context_id] += 1
             turn_count = self.ctx_id_to_turn_count[context.context_id]
             
-            # Trigger reflection every 10 turns
             if turn_count % 10 == 0 and turn_count > 0:
                 self.logger.info(f"Triggering reflection at turn {turn_count} for context {context.context_id}")
                 await self._reflect_and_improve_prompt(context.context_id)
             
-            # Add user input to message history
             messages.append({"role": "user", "content": user_input})
             
-            # Call LLM asynchronously (no native tool calling - just text)
             api_params = {
                 "model": self.model,
                 "messages": messages,
@@ -322,7 +311,6 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             assistant_message = response.choices[0].message
             assistant_content = assistant_message.content or ""
             
-            # Track token usage
             usage = response.usage if hasattr(response, 'usage') else None
             completion_tokens = 0
             cumulative_tokens = 0
@@ -333,14 +321,11 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 cumulative_tokens = self.ctx_id_to_tokens[context.context_id]
                 self.logger.debug(f"Tokens: {completion_tokens} completion, {cumulative_tokens} cumulative for context {context.context_id}")
             
-            # Add assistant message to history
             messages.append({
                 "role": "assistant",
                 "content": assistant_content,
             })
             
-            # Send response back with token metadata
-            # Build Message manually to include metadata
             message = Message(
                 role=Role.agent,
                 parts=[Part(root=TextPart(text=assistant_content))],
@@ -360,7 +345,6 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             error_details = traceback.format_exc()
             self.logger.error(f"White agent execute failed for context {context.context_id}: {e}")
             self.logger.error(f"Full traceback:\n{error_details}")
-            # Re-raise so A2A SDK can handle it properly
             raise
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -370,8 +354,6 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost", port=9002, model="gpt-5"):
     print(f"Starting white agent with model={model}...")
     
-    # Use public URL from environment if available (for AgentBeats/ngrok)
-    # Otherwise use local URL for local execution
     base_url = os.getenv("AGENT_URL") or f"http://{host}:{port}"
     card = prepare_white_agent_card(base_url)
 

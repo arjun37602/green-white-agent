@@ -76,11 +76,9 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         try:
-            # Get user input from context
             user_input = context.get_user_input()
             self.logger.debug(f"White agent received input for context {context.context_id}: {user_input[:100]}...")
             
-            # Initialize or get message history for this context
             if context.context_id not in self.ctx_id_to_messages:
                 self.ctx_id_to_messages[context.context_id] = [
                     {"role": "system", "content": SYSTEM_PROMPT}
@@ -88,11 +86,8 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 self.ctx_id_to_tokens[context.context_id] = 0
             
             messages = self.ctx_id_to_messages[context.context_id]
-            
-            # Add user input to message history
             messages.append({"role": "user", "content": user_input})
             
-            # Call LLM asynchronously (1 try, no retries)
             api_params = {
                 "model": self.model,
                 "messages": messages,
@@ -109,13 +104,13 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 try:
                     self.logger.debug(f"Calling LLM with model={self.model} (attempt {api_attempt + 1}/{max_api_tries})")
                     response = await acompletion(**api_params)
-                    break  # Success, exit retry loop
+                    break
                 except Exception as api_error:
                     last_api_error = api_error
                     if api_attempt < max_api_tries - 1:
                         self.logger.warning(f"LLM API call failed (attempt {api_attempt + 1}/{max_api_tries}): {api_error}")
                         import asyncio
-                        await asyncio.sleep(2)  # Brief pause before retry
+                        await asyncio.sleep(2)
                     else:
                         self.logger.error(f"LLM API call failed after {max_api_tries} attempts: {api_error}")
                         raise last_api_error
@@ -126,7 +121,6 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             assistant_message = response.choices[0].message
             assistant_content = assistant_message.content or ""
             
-            # Track token usage
             usage = response.usage if hasattr(response, 'usage') else None
             completion_tokens = 0
             cumulative_tokens = 0
@@ -137,14 +131,11 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 cumulative_tokens = self.ctx_id_to_tokens[context.context_id]
                 self.logger.debug(f"Tokens: {completion_tokens} completion, {cumulative_tokens} cumulative for context {context.context_id}")
             
-            # Add assistant message to history
             messages.append({
                 "role": "assistant",
                 "content": assistant_content,
             })
             
-            # Send response back with token metadata
-            # Build Message manually to include metadata
             message = Message(
                 role=Role.agent,
                 parts=[Part(root=TextPart(text=assistant_content))],
@@ -164,7 +155,6 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             error_details = traceback.format_exc()
             self.logger.error(f"White agent execute failed for context {context.context_id}: {e}")
             self.logger.error(f"Full traceback:\n{error_details}")
-            # Re-raise so A2A SDK can handle it properly
             raise
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -174,8 +164,6 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost", port=9002, model="gpt-5"):
     print(f"Starting white agent with model={model}...")
     
-    # Use public URL from environment if available (for AgentBeats/ngrok)
-    # Otherwise use local URL for local execution
     base_url = os.getenv("AGENT_URL") or f"http://{host}:{port}"
     card = prepare_white_agent_card(base_url)
 
@@ -189,9 +177,6 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
         agent_card=card,
         http_handler=request_handler,
     )
-    
-    # Build the Starlette app
-
 
     uvicorn.run(app.build(), host=host, port=port)
 
