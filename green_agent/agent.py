@@ -74,19 +74,22 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
             # Extract config
             task_ids = task_config.get("task_ids", None)
             task_ids = [
-                "csv-to-parquet",
-                "hello-world",
-                "extract-safely",
-                "fix-permissions",
                 "count-dataset-tokens",
                 "create-bucket",
+                "csv-to-parquet",
+                "extract-safely",
+                "fix-permissions",
                 "git-workflow-hack",
                 "grid-pattern-transform",
+                "hello-world",
                 "modernize-fortran-build",
                 "processing-pipeline",
-                "security-vulhub-minio",
-                "simple-web-scraper"
-                        ]
+                "blind-maze-explorer-algorithm",
+                "build-linux-kernel-qemu",
+                "crack-7z-hash",
+                "oom",
+                "play-zork",
+            ]
             dataset_path = Path(task_config.get("dataset_path", "data/tasks"))
             output_directory = Path(task_config.get("output_directory", "results_base_agentbeats"))
             model_id = task_config.get("model_id", "gpt-5-nano")
