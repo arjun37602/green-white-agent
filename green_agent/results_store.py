@@ -96,6 +96,11 @@ class ResultsStore:
     
     def save_result(self, model_id: str, result: TaskResult) -> None:
         """Append a result to the model's JSONL file (thread-safe)"""
+        # Skip saving to cache if metadata contains an error
+        if result.metadata and result.metadata.get("error") is not None:
+            print(f"Skipping cache for {result.task_id} due to error in metadata: {result.metadata.get('error')}")
+            return
+        
         model_file = self.get_model_file(model_id)
         
         with self._write_lock:
