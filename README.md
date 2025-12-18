@@ -42,13 +42,23 @@ This will:
 3. Execute the tasks defined in `launcher.py`
 4. Report results and terminate both agents
 
+### Example: Run a specific eval slice
+
+To run a curated set of tasks and write results to a custom directory (using the default evolved white agent or basic white agent):
+```bash
+python launcher.py --task-ids count-dataset-tokens create-bucket csv-to-parquet extract-safely fix-permissions git-workflow-hack grid-pattern-transform hello-world modernize-fortran-build processing-pipeline blind-maze-explorer-algorithm crack-7z-hash oom play-zork --max-parallel-tasks 1 --results-dir results --model gpt-5-nano --agent evolved
+```
+
+To switch to the basic white agent, add `--agent basic`.
+   
+
 ### Customizing Tasks
 
 Edit `launcher.py` to change which tasks are evaluated:
 
 ```python
 task_config = {
-    "task_ids": ["hello-world", "csv-to-parquet"],  # Add task IDs here
+    "task_ids": ["hello-world", "csv-to-parquet"],  # Add task IDs you would like to evaluate here
     "dataset_path": "data/tasks"
 }
 ```
@@ -123,9 +133,17 @@ green-white-agent/
 │   ├── sandbox_manager.py           # Docker sandbox management
 │   └── dataset_loaders/
 │       └── terminal_bench_loader.py # Load tasks from dataset
-├── white_agent/             # White Agent (Task Executor)
-│   ├── agent.py                     # Simple LLM agent with text-based tools
-│   └── __init__.py
+├── base_white_agent/               # Base White Agent (Original)
+│   ├── agent.py                    # Simple LLM agent with text-based tools
+│   ├── __init__.py
+│   └── run.sh
+├── evolved_white_agent/            # Evolved White Agent (With Reflection) ✨NEW
+│   ├── agent.py                    # LLM agent with self-improvement reflection
+│   │                               #   - Tracks turns (ctx_id_to_turn_count)
+│   │                               #   - Reflects every 10 turns
+│   │                               #   - Updates system prompt with learnings
+│   ├── __init__.py
+│   └── run.sh
 ├── data/tasks/              # Terminal Bench task definitions
 └── results/                 # Evaluation results
 ```
@@ -157,6 +175,8 @@ The white agent model can be configured in `white_agent/agent.py`:
 def __init__(self, model="gpt-4o"):
     self.model = model
 ```
+
+If using the launcher, refer to section ### Example: Run a specific eval slice. 
 
 ### Timeout Settings
 
