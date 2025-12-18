@@ -184,6 +184,16 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             Thought: /data directory doesn't exist, so there are no .tmp files to remove. Task is complete (vacuously true)
             Action: stop()
 
+            Structure your responses as:
+
+            === REASONING ===
+            Your thought process and analysis here.
+            === END REASONING ===
+
+            === ANSWER===
+            Your response here and nothing else (follow the format the user provides).
+            === END ANSWER ===
+
             === REMEMBER ===
             - You are an expert - reason carefully and act deliberately
             - Quality over speed - a correct solution is better than a fast wrong one

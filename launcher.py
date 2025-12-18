@@ -8,7 +8,7 @@ from pathlib import Path
 from datetime import datetime
 import httpx
 from green_agent import start_green_agent
-from base_white_agent import start_white_agent
+from evolved_white_agent import start_white_agent
 from utils import send_message, wait_agent_ready
 
 
