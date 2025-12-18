@@ -1,12 +1,10 @@
 # Green-White Agent: Terminal Bench Evaluation System
 
-A dual-agent system for evaluating LLM agents on Terminal Bench tasks. The **green agent** manages evaluation and task execution, while the **white agent** solves the tasks.
-
 ## Features
 
 - **Dual Agent Architecture**: Green agent (evaluator) + White agent (task solver)
 - **Two White Agent Types**: 
-  - **Basic**: Simple LLM agent
+  - **Basic**: Simple LLM agent with React
   - **Evolved**: LLM agent with reflection and self-improvement
 - **Docker Sandbox**: Isolated task execution
 - **Parallel Execution**: Run multiple tasks concurrently
@@ -34,7 +32,8 @@ conda activate green-white-agent
 Download and cache the Terminal Bench dataset:
 
 ```bash
-python -c "from datasets import load_dataset; load_dataset('agentsea/terminal-bench-core', split='test')"
+cd green_agent
+python cache_test_names 
 ```
 
 This downloads the dataset to `~/.cache/terminal-bench/terminal-bench-core/0.1.1`.
@@ -328,14 +327,9 @@ OPENAI_API_KEY=your-key-here
 ### Terminal Bench Dataset Not Found
 
 Run the cache command again:
-```bash
-python -c "from datasets import load_dataset; load_dataset('agentsea/terminal-bench-core', split='test')"
-```
 
 ### Port Already in Use
 
 The launcher automatically finds free ports. If you encounter issues, check for processes using ports 9001+ and terminate them.
 
-## License
 
-See LICENSE file for details.
