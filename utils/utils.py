@@ -4,7 +4,7 @@ import re
 import httpx
 import asyncio
 import uuid
-from typing import Dict
+from typing import Dict, Optional
 
 from a2a.client import A2ACardResolver, A2AClient
 from a2a.types import (
@@ -17,6 +17,38 @@ from a2a.types import (
     SendMessageRequest,
     SendMessageResponse,
 )
+
+# Global shared HTTP client with connection pooling
+_global_http_client: Optional[httpx.AsyncClient] = None
+_client_lock = asyncio.Lock()
+
+# Cache agent cards to avoid fetching repeatedly
+_agent_card_cache: Dict[str, AgentCard] = {}
+_card_cache_lock = asyncio.Lock()
+
+
+async def get_global_http_client() -> httpx.AsyncClient:
+    """Get or create a shared HTTP client with connection pooling."""
+    global _global_http_client
+    async with _client_lock:
+        if _global_http_client is None:
+            _global_http_client = httpx.AsyncClient(
+                timeout=600.0,
+                limits=httpx.Limits(
+                    max_connections=100,      # Total connection pool size
+                    max_keepalive_connections=20,  # Keep connections alive
+                ),
+            )
+        return _global_http_client
+
+
+async def close_global_http_client():
+    """Close the shared HTTP client."""
+    global _global_http_client
+    async with _client_lock:
+        if _global_http_client is not None:
+            await _global_http_client.aclose()
+            _global_http_client = None
 
 
 def parse_tags(str_with_tags: str) -> Dict[str, str]:
@@ -34,9 +66,22 @@ def parse_answer(text: str) -> str:
 
 
 async def get_agent_card(url: str) -> AgentCard | None:
-    httpx_client = httpx.AsyncClient()
+    """Get agent card with caching to avoid repeated fetches."""
+    # Check cache first
+    async with _card_cache_lock:
+        if url in _agent_card_cache:
+            return _agent_card_cache[url]
+    
+    # Fetch using shared HTTP client
+    httpx_client = await get_global_http_client()
     resolver = A2ACardResolver(httpx_client=httpx_client, base_url=url)
     card: AgentCard | None = await resolver.get_agent_card()
+    
+    # Cache the result if successful
+    if card:
+        async with _card_cache_lock:
+            _agent_card_cache[url] = card
+    
     return card
 
 
@@ -62,8 +107,9 @@ async def wait_agent_ready(url, timeout=10):
 async def send_message(
     url, message, task_id=None, context_id=None
 ) -> SendMessageResponse:
+    """Send message using shared HTTP client and cached agent card."""
     card = await get_agent_card(url)
-    httpx_client = httpx.AsyncClient(timeout=600.0)
+    httpx_client = await get_global_http_client()
     client = A2AClient(httpx_client=httpx_client, agent_card=card)
 
     message_id = uuid.uuid4().hex

@@ -72,7 +72,16 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         self.model = model
         self.ctx_id_to_messages = {}  # Maintain history per context_id
         self.ctx_id_to_tokens = {}  # Track token usage per context_id
+        self.ctx_locks = {}  # Per-context locks for thread-safe dictionary access
+        self.global_lock = None  # Will be initialized on first use
         self.logger = logging.getLogger(__name__)
+    
+    def _get_global_lock(self):
+        """Get or create the global lock for context initialization."""
+        if self.global_lock is None:
+            import asyncio
+            self.global_lock = asyncio.Lock()
+        return self.global_lock
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         try:
@@ -80,83 +89,93 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             user_input = context.get_user_input()
             self.logger.debug(f"White agent received input for context {context.context_id}: {user_input[:100]}...")
             
-            # Initialize or get message history for this context
-            if context.context_id not in self.ctx_id_to_messages:
-                self.ctx_id_to_messages[context.context_id] = [
-                    {"role": "system", "content": SYSTEM_PROMPT}
-                ]
-                self.ctx_id_to_tokens[context.context_id] = 0
+            # Initialize or get message history for this context (with lock for thread safety)
+            global_lock = self._get_global_lock()
+            async with global_lock:
+                if context.context_id not in self.ctx_id_to_messages:
+                    self.ctx_id_to_messages[context.context_id] = [
+                        {"role": "system", "content": SYSTEM_PROMPT}
+                    ]
+                    self.ctx_id_to_tokens[context.context_id] = 0
+                    # Create a per-context lock
+                    import asyncio
+                    self.ctx_locks[context.context_id] = asyncio.Lock()
             
-            messages = self.ctx_id_to_messages[context.context_id]
+            # Get the context-specific lock and messages
+            ctx_lock = self.ctx_locks[context.context_id]
             
-            # Add user input to message history
-            messages.append({"role": "user", "content": user_input})
-            
-            # Call LLM asynchronously (1 try, no retries)
-            api_params = {
-                "model": self.model,
-                "messages": messages,
-            }
-            
-            if "gpt-5" not in self.model:
-                api_params["temperature"] = 0.0
-            
-            max_api_tries = 1
-            last_api_error = None
-            response = None
-            
-            for api_attempt in range(max_api_tries):
-                try:
-                    self.logger.debug(f"Calling LLM with model={self.model} (attempt {api_attempt + 1}/{max_api_tries})")
-                    response = await acompletion(**api_params)
-                    break  # Success, exit retry loop
-                except Exception as api_error:
-                    last_api_error = api_error
-                    if api_attempt < max_api_tries - 1:
-                        self.logger.warning(f"LLM API call failed (attempt {api_attempt + 1}/{max_api_tries}): {api_error}")
-                        import asyncio
-                        await asyncio.sleep(2)  # Brief pause before retry
-                    else:
-                        self.logger.error(f"LLM API call failed after {max_api_tries} attempts: {api_error}")
-                        raise last_api_error
-            
-            if response is None:
-                raise RuntimeError(f"Failed to get LLM response after {max_api_tries} attempts")
-            
-            assistant_message = response.choices[0].message
-            assistant_content = assistant_message.content or ""
-            
-            # Track token usage
-            usage = response.usage if hasattr(response, 'usage') else None
-            completion_tokens = 0
-            cumulative_tokens = 0
-            
-            if usage and hasattr(usage, 'completion_tokens'):
-                completion_tokens = usage.completion_tokens
-                self.ctx_id_to_tokens[context.context_id] += completion_tokens
-                cumulative_tokens = self.ctx_id_to_tokens[context.context_id]
-                self.logger.debug(f"Tokens: {completion_tokens} completion, {cumulative_tokens} cumulative for context {context.context_id}")
-            
-            # Add assistant message to history
-            messages.append({
-                "role": "assistant",
-                "content": assistant_content,
-            })
-            
-            # Send response back with token metadata
-            # Build Message manually to include metadata
-            message = Message(
-                role=Role.agent,
-                parts=[Part(root=TextPart(text=assistant_content))],
-                message_id=str(uuid.uuid4()),
-                context_id=context.context_id,
-                metadata={
-                    "completion_tokens": completion_tokens,
-                    "cumulative_tokens": cumulative_tokens
+            # Use context-specific lock for all operations on this context's data
+            async with ctx_lock:
+                messages = self.ctx_id_to_messages[context.context_id]
+                
+                # Add user input to message history
+                messages.append({"role": "user", "content": user_input})
+                
+                # Call LLM asynchronously (1 try, no retries)
+                api_params = {
+                    "model": self.model,
+                    "messages": messages,
                 }
-            )
-            await event_queue.enqueue_event(message)
-            self.logger.debug(f"White agent sent response for context {context.context_id}")
+                
+                if "gpt-5" not in self.model:
+                    api_params["temperature"] = 0.0
+                
+                max_api_tries = 1
+                last_api_error = None
+                response = None
+                
+                for api_attempt in range(max_api_tries):
+                    try:
+                        self.logger.debug(f"Calling LLM with model={self.model} (attempt {api_attempt + 1}/{max_api_tries})")
+                        response = await acompletion(**api_params)
+                        break  # Success, exit retry loop
+                    except Exception as api_error:
+                        last_api_error = api_error
+                        if api_attempt < max_api_tries - 1:
+                            self.logger.warning(f"LLM API call failed (attempt {api_attempt + 1}/{max_api_tries}): {api_error}")
+                            import asyncio
+                            await asyncio.sleep(2)  # Brief pause before retry
+                        else:
+                            self.logger.error(f"LLM API call failed after {max_api_tries} attempts: {api_error}")
+                            raise last_api_error
+                
+                if response is None:
+                    raise RuntimeError(f"Failed to get LLM response after {max_api_tries} attempts")
+                
+                assistant_message = response.choices[0].message
+                assistant_content = assistant_message.content or ""
+                
+                # Track token usage
+                usage = response.usage if hasattr(response, 'usage') else None
+                completion_tokens = 0
+                cumulative_tokens = 0
+                
+                if usage and hasattr(usage, 'completion_tokens'):
+                    completion_tokens = usage.completion_tokens
+                    self.ctx_id_to_tokens[context.context_id] += completion_tokens
+                    cumulative_tokens = self.ctx_id_to_tokens[context.context_id]
+                    self.logger.debug(f"Tokens: {completion_tokens} completion, {cumulative_tokens} cumulative for context {context.context_id}")
+                
+                # Add assistant message to history
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_content,
+                })
+                
+                # Send response back with token metadata
+                # Build Message manually to include metadata
+                message = Message(
+                    role=Role.agent,
+                    parts=[Part(root=TextPart(text=assistant_content))],
+                    message_id=str(uuid.uuid4()),
+                    context_id=context.context_id,
+                    metadata={
+                        "completion_tokens": completion_tokens,
+                        "cumulative_tokens": cumulative_tokens
+                    }
+                )
+                await event_queue.enqueue_event(message)
+                self.logger.debug(f"White agent sent response for context {context.context_id}")
             
         except Exception as e:
             # Log the full error details

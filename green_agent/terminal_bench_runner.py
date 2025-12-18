@@ -29,7 +29,7 @@ from .dataset_loaders.terminal_bench_loader import TerminalBenchTaskLoader
 from .results_store import ResultsStore, TaskResult
 
 # A2A imports for proper message handling
-from utils import send_message
+from utils import send_message, close_global_http_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1019,8 +1019,23 @@ Complete this task using the available tools."""
         return self.execution_history
     
     def cleanup_resources(self):
-        """Clean up Docker resources (containers, images, etc)."""
-        self.logger.info("Cleaning up Docker resources...")
+        """Clean up Docker resources and HTTP connections."""
+        self.logger.info("Cleaning up resources...")
+        
+        # Close shared HTTP client first
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If loop is running, schedule the cleanup
+                asyncio.create_task(close_global_http_client())
+            else:
+                # If loop is not running, run it
+                loop.run_until_complete(close_global_http_client())
+            self.logger.info("HTTP client closed")
+        except Exception as e:
+            self.logger.warning(f"Error closing HTTP client: {e}")
+        
+        # Clean up Docker resources
         try:
             import docker
             client = docker.from_env()
@@ -1031,6 +1046,6 @@ Complete this task using the available tools."""
             # Prune images (force remove unused)
             client.images.prune(filters={"dangling": False})
             
-            self.logger.info("Cleanup completed")
+            self.logger.info("Docker cleanup completed")
         except Exception as e:
-            self.logger.warning(f"Error during cleanup: {e}")
+            self.logger.warning(f"Error during Docker cleanup: {e}")

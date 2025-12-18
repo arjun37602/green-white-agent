@@ -14,6 +14,7 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import docker
 import docker.errors
@@ -371,15 +372,16 @@ class SandboxManager:
     
     def execute_command(self, sandbox_id: str, command: str, timeout: int = 30) -> CommandResult:
         """
-        Execute a command inside the Docker container.
+        Execute a command inside the Docker container with timeout enforcement.
         
         Args:
             sandbox_id: ID of the sandbox container
             command: Command to execute
-            timeout: Maximum execution time in seconds (not currently enforced)
+            timeout: Maximum execution time in seconds (default: 30)
             
         Returns:
-            CommandResult with execution details
+            CommandResult with execution details. If timeout occurs, returns a result
+            with returncode=-1 and success=False.
             
         Raises:
             ValueError: If sandbox not found
@@ -400,12 +402,40 @@ class SandboxManager:
         try:
             self.logger.info(f"Executing in {sandbox_id}: {command}")
             
-            # Execute command in container (Terminal Bench style)
-            exec_result = container.exec_run(
-                cmd=["sh", "-c", command],
-                workdir=self.CONTAINER_WORK_DIR,
-                demux=True
-            )
+            # Execute command in container with timeout (Terminal Bench style)
+            def _run_exec():
+                return container.exec_run(
+                    cmd=["sh", "-c", command],
+                    workdir=self.CONTAINER_WORK_DIR,
+                    demux=True
+                )
+            
+            # Use ThreadPoolExecutor to enforce timeout
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_exec)
+                try:
+                    exec_result = future.result(timeout=timeout)
+                except FuturesTimeoutError:
+                    execution_time = time.time() - start_time
+                    self.logger.error(f"Command timed out after {timeout}s: {command}")
+                    
+                    # Try to kill the container process (best effort)
+                    try:
+                        container.exec_run(cmd=["pkill", "-9", "-f", command])
+                    except Exception:
+                        pass  # Best effort cleanup
+                    
+                    command_result = CommandResult(
+                        command=command,
+                        stdout="",
+                        stderr=f"Command execution timed out after {timeout} seconds",
+                        returncode=-1,
+                        execution_time=execution_time,
+                        timestamp=timestamp,
+                        success=False
+                    )
+                    sandbox_info["command_history"].append(command_result)
+                    return command_result
             
             execution_time = time.time() - start_time
             
