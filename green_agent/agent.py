@@ -77,12 +77,20 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                 "csv-to-parquet",
                 "hello-world",
                 "extract-safely",
-                "fix-permissions"
+                "fix-permissions",
+                "count-dataset-tokens",
+                "create-bucket",
+                "git-workflow-hack",
+                "grid-pattern-transform",
+                "modernize-fortran-build",
+                "processing-pipeline",
+                "security-vulhub-minio",
+                "simple-web-scraper"
                         ]
             dataset_path = Path(task_config.get("dataset_path", "data/tasks"))
-            output_directory = Path(task_config.get("output_directory", "results"))
-            model_id = task_config.get("model_id", "default_model")
-            results_dir = task_config.get("results_dir", "./results")
+            output_directory = Path(task_config.get("output_directory", "results_base_agentbeats"))
+            model_id = task_config.get("model_id", "gpt-5-nano")
+            results_dir = task_config.get("results_dir", "./results_base_agentbeats")
             max_parallel_tasks = task_config.get("max_parallel_tasks", 1)
             max_attempts = task_config.get("max_attempts", 1)
             limit = task_config.get("limit", None)

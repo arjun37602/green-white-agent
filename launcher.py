@@ -27,7 +27,20 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
     # Don't override None here - let it pass through to load all tasks
     # Only set default if it's an empty list (which shouldn't happen, but be safe)
     if task_ids == []:
-        task_ids = ["hello-world"]
+        task_ids = [
+            "csv-to-parquet",
+            "hello-world",
+            "extract-safely",
+            "fix-permissions",
+            "count-dataset-tokens",
+            "create-bucket",
+            "git-workflow-hack",
+            "grid-pattern-transform",
+            "modernize-fortran-build",
+            "processing-pipeline",
+            "security-vulhub-minio",
+            "simple-web-scraper"
+        ]
     
     # Stable results directory for JSONL cache (no timestamp for caching)
     results_base = Path(results_dir)
