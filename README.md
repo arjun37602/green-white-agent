@@ -42,6 +42,15 @@ This will:
 3. Execute the tasks defined in `launcher.py`
 4. Report results and terminate both agents
 
+### Example: Run a specific eval slice
+
+To run a curated set of tasks and write results to a custom directory (using the default evolved white agent):
+```bash
+python launcher.py --task-ids count-dataset-tokens create-bucket csv-to-parquet extract-safely fix-permissions git-workflow-hack grid-pattern-transform hello-world modernize-fortran-build processing-pipeline blind-maze-explorer-algorithm crack-7z-hash oom play-zork --max-parallel-tasks 1 --results-dir results --model gpt-5-nano --agent basic
+```
+
+To switch to the basic white agent, add `--agent basic`.
+
 ### Customizing Tasks
 
 Edit `launcher.py` to change which tasks are evaluated:
