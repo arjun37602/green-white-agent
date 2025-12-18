@@ -85,7 +85,6 @@ class TerminalBenchGreenAgentExecutor(AgentExecutor):
                 "modernize-fortran-build",
                 "processing-pipeline",
                 "blind-maze-explorer-algorithm",
-                "build-linux-kernel-qemu",
                 "crack-7z-hash",
                 "oom",
                 "play-zork",
