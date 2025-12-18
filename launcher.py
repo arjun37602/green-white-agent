@@ -220,7 +220,7 @@ if __name__ == "__main__":
         "--task-ids",
         type=str,
         nargs="+",
-        default=None,
+        default=[],
         help="Task IDs to evaluate. Default: ['hello-world']. Use --all-tasks to evaluate all tasks."
     )
     parser.add_argument(
