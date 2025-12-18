@@ -193,12 +193,7 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
     # Build the Starlette app
 
 
-    uvicorn.run(
-        app.build(), 
-        host=host, 
-        port=port,
-        timeout_keep_alive=5400,  
-    )
+    uvicorn.run(app.build(), host=host, port=port)
 
 
 if __name__ == "__main__":

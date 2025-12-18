@@ -288,12 +288,7 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
         http_handler=request_handler,
     )
 
-    uvicorn.run(
-        app.build(), 
-        host=host, 
-        port=port,
-        timeout_keep_alive=5400,  
-    )
+    uvicorn.run(app.build(), host=host, port=port)
 
 
 if __name__ == "__main__":

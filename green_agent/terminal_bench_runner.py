@@ -29,7 +29,7 @@ from .dataset_loaders.terminal_bench_loader import TerminalBenchTaskLoader
 from .results_store import ResultsStore, TaskResult
 
 # A2A imports for proper message handling
-from utils import send_message
+from utils import send_message, get_agent_card
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -134,6 +134,9 @@ class GreenAgentTerminalBench:
         # Task execution tracking
         self.active_tasks: Dict[str, Dict[str, Any]] = {}
         self.execution_history: List[TaskExecutionResult] = []
+        
+        # Agent card cache for parallel execution
+        self._white_agent_card = None
     
     def load_terminal_bench_tasks(self, task_ids: List[str] = None) -> List[Tuple[Task, TaskPaths]]:
         """
@@ -251,6 +254,13 @@ class GreenAgentTerminalBench:
         Returns:
             List of TaskExecutionResult objects
         """
+        # Fetch agent card once upfront for all parallel tasks
+        self.logger.info(f"Fetching white agent card from {self.white_agent_url}...")
+        self._white_agent_card = await get_agent_card(self.white_agent_url, use_cache=False)
+        if self._white_agent_card is None:
+            raise RuntimeError(f"Failed to fetch agent card from {self.white_agent_url}")
+        self.logger.info(f"Successfully fetched agent card: {self._white_agent_card.name}")
+        
         # Check cache and determine how many attempts needed per task
         self.logger.info(f"Checking cache for attempts needed (target: {self.attempts} per task)")
         
@@ -797,7 +807,8 @@ Complete this task using the available tools."""
             response = await send_message(
                 self.white_agent_url,
                 task_message,
-                context_id=context_id
+                context_id=context_id,
+                agent_card=self._white_agent_card
             )
             
             # Convert response to dict for compatibility with existing code
@@ -939,7 +950,8 @@ Complete this task using the available tools."""
             response = await send_message(
                 self.white_agent_url,
                 message_text,
-                context_id=context_id
+                context_id=context_id,
+                agent_card=self._white_agent_card
             )
             
             # Convert response to dict for compatibility
