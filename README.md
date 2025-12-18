@@ -137,7 +137,7 @@ green-white-agent/
 │   ├── agent.py                    # Simple LLM agent with text-based tools
 │   ├── __init__.py
 │   └── run.sh
-├── evolved_white_agent/            # Evolved White Agent (With Reflection) ✨NEW
+├── evolved_white_agent/            # Evolved White Agent (With Reflection) 
 │   ├── agent.py                    # LLM agent with self-improvement reflection
 │   │                               #   - Tracks turns (ctx_id_to_turn_count)
 │   │                               #   - Reflects every 10 turns
