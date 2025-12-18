@@ -1,5 +1,6 @@
 """Launcher module - initiates and coordinates the evaluation process."""
 
+import importlib
 import multiprocessing
 import json
 import asyncio
@@ -8,11 +9,23 @@ from pathlib import Path
 from datetime import datetime
 import httpx
 from green_agent import start_green_agent
-from base_white_agent import start_white_agent
 from utils import send_message, wait_agent_ready
 
 
-async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results", max_parallel_tasks=5, max_attempts=1, limit=None):
+def load_white_agent(agent_kind: str):
+    """Dynamically import the requested white agent."""
+    module_map = {"evolved": "evolved_white_agent", "basic": "base_white_agent"}
+    if agent_kind not in module_map:
+        raise ValueError(f"Unknown agent '{agent_kind}', choose one of {list(module_map)}")
+
+    module = importlib.import_module(module_map[agent_kind])
+    start = getattr(module, "start_white_agent", None)
+    if start is None:
+        raise ImportError(f"{module_map[agent_kind]} missing start_white_agent")
+    return start
+
+
+async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results", max_parallel_tasks=5, max_attempts=1, limit=None, agent="evolved"):
     """
     Launch evaluation with configurable settings.
     
@@ -77,13 +90,14 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
     print("Green agent is ready.")
 
     # start white agent
-    print(f"Launching white agent with model={model}...")
+    start_white_agent = load_white_agent(agent)
+    print(f"Launching {agent} white agent with model={model}...")
     white_port = find_free_port(9011)
     white_address = ("localhost", white_port)
     white_url = f"http://{white_address[0]}:{white_address[1]}"
     print(f"White agent port: {white_port}")
     p_white = multiprocessing.Process(
-        target=start_white_agent, 
+        target=start_white_agent,
         args=("terminal_bench_white_agent", *white_address),
         kwargs={"model": model}
     )
@@ -163,6 +177,7 @@ You should use the following task configuration:
     
     summary = {
         "model": model,
+        "agent": agent,
         "task_ids": task_ids,
         "timestamp": timestamp,
         "run_id": run_id,
@@ -236,6 +251,12 @@ if __name__ == "__main__":
         default=None,
         help="Limit the number of tasks to run (e.g., 80 for first 80 tasks). Default: None (all tasks)"
     )
+    parser.add_argument(
+        "--agent",
+        choices=["evolved", "basic"],
+        default="evolved",
+        help="Which white agent implementation to run"
+    )
     
     args = parser.parse_args()
     
@@ -252,6 +273,7 @@ if __name__ == "__main__":
         results_dir=args.results_dir,
         max_parallel_tasks=args.max_parallel_tasks,
         max_attempts=args.max_attempts,
-        limit=args.limit
+        limit=args.limit,
+        agent=args.agent,
     ))
 
