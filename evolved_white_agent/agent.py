@@ -255,7 +255,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             """
 
             reflection_response = await acompletion(
-                model=model,
+                model=self.model,
                 messages=[{"role": "user", "content": reflection_prompt}],
                 temperature=0.0,
             )
