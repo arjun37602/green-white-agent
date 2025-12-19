@@ -54,8 +54,9 @@ def prepare_white_agent_card(url):
 class TerminalBenchWhiteAgentExecutor(AgentExecutor):
     """White agent executor using text-based JSON tool calling."""
     
-    def __init__(self, model="gpt-5"):
+    def __init__(self, model="gpt-5", results_dir=None):
         self.model = model
+        self.results_dir = results_dir
         self.ctx_id_to_messages = {}  # Maintain history per context_id
         self.ctx_id_to_tokens = {}  # Track token usage per context_id
         self.ctx_id_to_turn_count = {}  # Track turns for reflection trigger
@@ -203,6 +204,19 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 
             Now await your task and solve it expertly.
         """
+        
+        # Load system prompt from file if it exists, otherwise save the default
+        if self.results_dir:
+            prompt_file = Path(self.results_dir) / "system_prompt.txt"
+            if prompt_file.exists():
+                self.logger.info(f"Loading system prompt from {prompt_file}")
+                with open(prompt_file, "r") as f:
+                    self.system_prompt = f.read()
+            else:
+                self.logger.info(f"Saving initial system prompt to {prompt_file}")
+                prompt_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(prompt_file, "w") as f:
+                    f.write(self.system_prompt)
 
     async def _reflect_and_improve_prompt(self, context_id: str) -> None:
         """Analyze recent interactions and improve the system prompt."""
@@ -272,6 +286,13 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 assert messages[0]["role"] == "system", "The first message should be the system prompt"
                 messages[0]["content"] = self.system_prompt
                 
+                # Save updated system prompt to file
+                if self.results_dir:
+                    prompt_file = Path(self.results_dir) / "system_prompt.txt"
+                    self.logger.info(f"Saving updated system prompt to {prompt_file}")
+                    with open(prompt_file, "w") as f:
+                        f.write(self.system_prompt)
+                
         except Exception as e:
             self.logger.warning(f"Reflection failed for context {context_id}: {e}")
 
@@ -292,7 +313,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             self.ctx_id_to_turn_count[context.context_id] += 1
             turn_count = self.ctx_id_to_turn_count[context.context_id]
             
-            if turn_count % 10 == 0 and turn_count > 0:
+            if turn_count % 5 == 0 and turn_count > 0:
                 self.logger.info(f"Triggering reflection at turn {turn_count} for context {context.context_id}")
                 await self._reflect_and_improve_prompt(context.context_id)
             
@@ -351,13 +372,13 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         raise NotImplementedError
 
 
-def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost", port=9002, model="gpt-5"):
+def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost", port=9002, model="gpt-5", results_dir=None):
     print(f"Starting white agent with model={model}...")
     
     base_url = os.getenv("AGENT_URL") or f"http://{host}:{port}"
     card = prepare_white_agent_card(base_url)
 
-    executor = TerminalBenchWhiteAgentExecutor(model=model)
+    executor = TerminalBenchWhiteAgentExecutor(model=model, results_dir=results_dir)
     request_handler = DefaultRequestHandler(
         agent_executor=executor,
         task_store=InMemoryTaskStore(),

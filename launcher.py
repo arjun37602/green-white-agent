@@ -107,11 +107,19 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
     else:
         raise ValueError(f"Invalid agent_type: {agent_type}. Must be 'evolved' or 'basic'")
     
-    p_white = multiprocessing.Process(
-        target=start_white_agent, 
-        args=("terminal_bench_white_agent", *white_address),
-        kwargs={"model": model}
-    )
+    if agent_type == "evolved":
+        p_white = multiprocessing.Process(
+            target=start_white_agent, 
+            args=("terminal_bench_white_agent", *white_address),
+            kwargs={"model": model, "results_dir": str(results_base)}
+        )
+    else:
+        p_white = multiprocessing.Process(
+            target=start_white_agent, 
+            args=("terminal_bench_white_agent", *white_address),
+            kwargs={"model": model}
+        )
+        
     p_white.start()
     assert await wait_agent_ready(white_url), "White agent not ready in time"
     print("White agent is ready.")
