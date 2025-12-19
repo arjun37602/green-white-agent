@@ -171,7 +171,16 @@ def start_green_agent(agent_name="terminal_bench_green_agent", host="localhost",
         http_handler=request_handler,
     )
 
-    uvicorn.run(app.build(), host=host, port=port)
+    uvicorn.run(
+        app.build(),
+        host=host,
+        port=port,
+        backlog=10000,  # Increase backlog for high-parallelism scenarios
+        limit_max_requests=100000,  # Allow many requests before restart
+        timeout_keep_alive=300,  # Keep connections alive for 5min (for long LLM calls)
+        h11_max_incomplete_event_size=100 * 1024 * 1024  # 100MB for large responses
+        # Note: NO limit_concurrency - we want to handle all concurrent requests, not reject them
+    )
 
 
 if __name__ == "__main__":

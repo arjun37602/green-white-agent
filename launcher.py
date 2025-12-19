@@ -148,7 +148,9 @@ You should use the following task configuration:
     print("Task description:")
     print(task_text)
     print("Sending...")
-    response = await send_message(green_url, task_text)
+    # Use very large timeout for launcher since green agent may process multiple tasks
+    # 4 hours should be more than enough for any reasonable workload
+    response = await send_message(green_url, task_text, timeout=14400.0)
     print("Response from green agent:")
     print(response)
 

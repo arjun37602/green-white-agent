@@ -137,6 +137,26 @@ Important notes:
         # Initialize task evaluator
         self.task_evaluator = TaskEvaluator()
         
+        # Create shared HTTP client for connection pooling
+        # Use very high timeout since individual requests can be long
+        # NOTE: WriteTimeout can occur if the server is busy processing other requests
+        # and can't quickly read the incoming request body.
+        # NOTE: ConnectTimeout can occur during high load when the server's backlog is full
+        # or when there's a brief pause between request batches.
+        import httpx
+        self._httpx_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=120.0,     # 120s to establish connection (increased - prevents ConnectTimeout during batch transitions)
+                read=None,         # No read timeout (some LLM calls are very long)
+                write=120.0,       # 120s to send request (prevents WriteTimeout during high load)
+                pool=120.0         # 120s to get connection from pool (increased for connection reuse)
+            ),
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=50  # Increased keepalive for better connection reuse
+            )
+        )
+        
         # Initialize Terminal-Bench loader if dataset path provided
         self.tb_loader = None
         if terminal_bench_dataset_path:
@@ -362,9 +382,21 @@ Important notes:
             async with self.task_semaphore:
                 return await self.execute_task_with_sandbox(task, task_paths, output_directory)
         
-        # Run all tasks in parallel
+        # Launch tasks with staggered start to prevent overwhelming the white agent
+        # with simultaneous initial connections
+        stagger_delay = 1.0  # 1 second delay between launches
+        self.logger.info(f"Launching {len(tasks_to_run)} tasks with {stagger_delay}s stagger delay to prevent connection burst")
+        task_coroutines = []
+        
+        for i, (task, task_paths) in enumerate(tasks_to_run):
+            task_coroutines.append(execute_with_semaphore(task, task_paths))
+            # Add small delay after launching each task (except the last one)
+            if i < len(tasks_to_run) - 1:
+                await asyncio.sleep(stagger_delay)
+        
+        # Wait for all tasks to complete
         new_results = await asyncio.gather(
-            *[execute_with_semaphore(task, task_paths) for task, task_paths in tasks_to_run],
+            *task_coroutines,
             return_exceptions=True
         )
         
@@ -528,8 +560,26 @@ Important notes:
                             trajectory_data["interactions"].append(interaction) #add assistant response
                         
                     except Exception as e:
-                        self.logger.error(f"[{task_id}] Error communicating with white agent: {e}")
-                        self.logger.warning(f"[{task_id}] Breaking loop due to white agent error")
+                        import traceback as tb
+                        error_type = type(e).__name__
+                        error_msg = str(e)
+                        
+                        # Detailed error logging
+                        self.logger.error(f"🔴 [{task_id}] Error communicating with white agent")
+                        self.logger.error(f"🔴 [{task_id}] Error type: {error_type}")
+                        self.logger.error(f"🔴 [{task_id}] Error message: {error_msg}")
+                        self.logger.error(f"🔴 [{task_id}] Iteration: {iteration}")
+                        self.logger.error(f"🔴 [{task_id}] Full traceback:\n{tb.format_exc()}")
+                        
+                        # Check for specific error types
+                        if "503" in error_msg:
+                            self.logger.error(f"🔴 [{task_id}] 503 SERVICE UNAVAILABLE - White agent may be overloaded or crashed")
+                        elif "connection" in error_msg.lower():
+                            self.logger.error(f"🔴 [{task_id}] CONNECTION ERROR - White agent may be unreachable")
+                        elif "timeout" in error_msg.lower():
+                            self.logger.error(f"🔴 [{task_id}] TIMEOUT ERROR - Request took too long")
+                        
+                        self.logger.warning(f"🟠 [{task_id}] Breaking loop due to white agent error")
                         # interaction is already defined at the start of the loop
                         interaction["error"] = str(e)
                         trajectory_data["interactions"].append(interaction)
@@ -911,10 +961,14 @@ Current terminal state:
             self.logger.info(f"Message preview: {task_message[:300]}...")
             
             # Send using A2A SDK (no tools parameter - all in text)
+            # Use task timeout with buffer for overhead
+            timeout = max(600.0, task.max_agent_timeout_sec * 1.5)
             response = await send_message(
                 self.white_agent_url,
                 task_message,
-                context_id=context_id
+                context_id=context_id,
+                timeout=timeout,
+                httpx_client=self._httpx_client
             )
             
             # Convert response to dict for compatibility with existing code
@@ -964,7 +1018,21 @@ Current terminal state:
                     raise Exception(error_msg)
                 
         except Exception as e:
-            self.logger.error(f"Failed to send initial task to white agent: {e}")
+            import traceback as tb
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            self.logger.error(f"🔴 Failed to send initial task to white agent")
+            self.logger.error(f"🔴 Error type: {error_type}")
+            self.logger.error(f"🔴 Error message: {error_msg}")
+            self.logger.error(f"🔴 Full traceback:\n{tb.format_exc()}")
+            
+            # Check if white agent is still reachable
+            if "503" in error_msg:
+                self.logger.error(f"🔴 503 SERVICE UNAVAILABLE - White agent server may have crashed")
+            elif "connection" in error_msg.lower() or "refused" in error_msg.lower():
+                self.logger.error(f"🔴 CONNECTION ERROR - White agent may not be running")
+            
             raise
     
     def _extract_text_from_message(self, message) -> str:
@@ -1007,10 +1075,14 @@ Current terminal state:
                 raise ValueError("Must provide either terminal_output or error_message")
             
             # Send using A2A SDK
+            # Use task timeout with buffer for overhead
+            timeout = max(600.0, task.max_agent_timeout_sec * 1.5)
             response = await send_message(
                 self.white_agent_url,
                 message_text,
-                context_id=context_id
+                context_id=context_id,
+                timeout=timeout,
+                httpx_client=self._httpx_client
             )
             
             # Convert response to dict for compatibility with _extract_commands
@@ -1050,7 +1122,21 @@ Current terminal state:
                     raise Exception(error_msg)
                 
         except Exception as e:
-            self.logger.error(f"Failed to send tool results to white agent: {e}")
+            import traceback as tb
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            self.logger.error(f"🔴 Failed to send tool results to white agent")
+            self.logger.error(f"🔴 Error type: {error_type}")
+            self.logger.error(f"🔴 Error message: {error_msg}")
+            self.logger.error(f"🔴 Full traceback:\n{tb.format_exc()}")
+            
+            # Check if white agent is still reachable
+            if "503" in error_msg:
+                self.logger.error(f"🔴 503 SERVICE UNAVAILABLE - White agent server may have crashed")
+            elif "connection" in error_msg.lower() or "refused" in error_msg.lower():
+                self.logger.error(f"🔴 CONNECTION ERROR - White agent may not be running")
+            
             raise
     
     def get_execution_history(self) -> List[TaskExecutionResult]:
@@ -1058,7 +1144,7 @@ Current terminal state:
         return self.execution_history
     
     def cleanup_resources(self):
-        """Clean up Docker resources (containers, images, etc)."""
+        """Clean up Docker resources (containers, images, etc) and HTTP client."""
         self.logger.info("Cleaning up Docker resources...")
         try:
             import docker
@@ -1073,3 +1159,16 @@ Current terminal state:
             self.logger.info("Cleanup completed")
         except Exception as e:
             self.logger.warning(f"Error during cleanup: {e}")
+        
+        # Close shared HTTP client
+        try:
+            if hasattr(self, '_httpx_client'):
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(self._httpx_client.aclose())
+                else:
+                    loop.run_until_complete(self._httpx_client.aclose())
+                self.logger.info("HTTP client closed")
+        except Exception as e:
+            self.logger.warning(f"Error closing HTTP client: {e}")
