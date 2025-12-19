@@ -110,7 +110,7 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
     p_white = multiprocessing.Process(
         target=start_white_agent, 
         args=("terminal_bench_white_agent", *white_address),
-        kwargs={"model": model}
+        kwargs={"model": model, "results_dir": str(results_base)}
     )
     p_white.start()
     assert await wait_agent_ready(white_url), "White agent not ready in time"
