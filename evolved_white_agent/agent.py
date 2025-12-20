@@ -236,10 +236,11 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 
                 {history_text}
 
-                ONLY suggest 2-3 SHORT, CONCRETE rules or guidelines (max 1-2 sentences each) if they meet ALL these criteria:
-                1. GENERALIZABLE: The rule applies broadly to MANY different tasks, not just this specific task
-                2. REUSABLE: You are confident this knowledge will help in FUTURE tasks
+                ONLY suggest SHORT, CONCRETE rules or guidelines (max 1-2 sentences each) if they meet ALL these criteria:
+                1. GENERALIZABLE: The rule applies broadly to MANY different future tasks, not just this specific task
+                2. REUSABLE: You are confident this knowledge will help in FUTURE tasks across different scenarios
                 3. ACTIONABLE: Clear, specific actions (e.g., terminal commands, installation procedures, best practices)
+                4. NOT ALREADY IN SYSTEM PROMPT: You must be certain this advice is NOT already covered in the system prompt
 
                 Good examples of what to suggest:
                 - Useful terminal commands or flags (e.g., "use 'command -v <tool>' to check if a tool is installed")
@@ -248,9 +249,10 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 
                 DO NOT suggest:
                 - Task-specific advice (e.g., "for THIS particular log file, check...")
-                - Things already covered in the system prompt
+                - Anything already covered in the system prompt (check carefully!)
                 - Suggestions that only apply to one narrow situation
-
+                
+                You are NOT required to suggest 2-3 items. Suggest fewer or even nothing if no truly generalizable improvements are found.
                 If no generalizable improvements are found, respond with "N/A"
                 
                 Format your response as a bullet list of actionable guidelines, starting each with "- ". Keep it concise.
@@ -280,7 +282,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             improvements = improvements_match.group(1).strip() if improvements_match else ""
             
             if improvements.strip() and improvements != "N/A":
-                self.system_prompt += f"\n\n=== LEARNED FROM EXPERIENCE ===\n{improvements.strip()}\n"
+                self.system_prompt += f"\n\n{improvements.strip()}\n"
                 self.logger.info(f"System prompt improved for context {context_id}. Added:\n{improvements.strip()}")
                 
                 assert messages[0]["role"] == "system", "The first message should be the system prompt"
