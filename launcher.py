@@ -24,26 +24,6 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
         limit: Limit the number of tasks to run (None = all tasks)
         agent_type: Type of white agent to use ("evolved" or "basic") (default: "evolved")
     """
-    # Don't override None here - let it pass through to load all tasks
-    # Only set default if it's an empty list (which shouldn't happen, but be safe)
-    if task_ids == []:
-        task_ids = [
-            "count-dataset-tokens",
-            "create-bucket",
-            "csv-to-parquet",
-            "extract-safely",
-            "fix-permissions",
-            "git-workflow-hack",
-            "grid-pattern-transform",
-            "hello-world",
-            "modernize-fortran-build",
-            "processing-pipeline",
-            "blind-maze-explorer-algorithm",
-            "build-linux-kernel-qemu",
-            "crack-7z-hash",
-            "oom",
-            "play-zork",
-        ]
         
     # Stable results directory for JSONL cache (no timestamp for caching)
     results_base = Path(results_dir)
@@ -134,7 +114,6 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
     dataset_path = str(tb_cache_path) if tb_cache_path.exists() else "data/tasks"
     
     task_config = {
-        "task_ids": task_ids,  # None = all tasks, list = specific tasks
         "dataset_path": dataset_path,
         "output_directory": str(run_output_dir),  # Run-specific: sessions, agent-logs
         "model_id": model,
@@ -143,6 +122,10 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
         "max_attempts": max_attempts,
         "limit": limit
     }
+    
+    if task_ids:
+        task_config["task_ids"] = task_ids
+        
     task_text = f"""
 Your task is to evaluate the white agent located at:
 <white_agent_url>
