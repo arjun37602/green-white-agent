@@ -107,11 +107,19 @@ async def launch_evaluation(model="gpt-5", task_ids=None, results_dir="./results
     else:
         raise ValueError(f"Invalid agent_type: {agent_type}. Must be 'evolved' or 'basic'")
     
-    p_white = multiprocessing.Process(
-        target=start_white_agent, 
-        args=("terminal_bench_white_agent", *white_address),
-        kwargs={"model": model}
-    )
+    if agent_type == "evolved":
+        p_white = multiprocessing.Process(
+            target=start_white_agent, 
+            args=("terminal_bench_white_agent", *white_address),
+            kwargs={"model": model, "results_dir": str(results_base)}
+        )
+    else:
+        p_white = multiprocessing.Process(
+            target=start_white_agent, 
+            args=("terminal_bench_white_agent", *white_address),
+            kwargs={"model": model}
+        )
+        
     p_white.start()
     assert await wait_agent_ready(white_url), "White agent not ready in time"
     print("White agent is ready.")
@@ -148,7 +156,9 @@ You should use the following task configuration:
     print("Task description:")
     print(task_text)
     print("Sending...")
-    response = await send_message(green_url, task_text)
+    # Use very large timeout for launcher since green agent may process multiple tasks
+    # 4 hours should be more than enough for any reasonable workload
+    response = await send_message(green_url, task_text, timeout=14400.0)
     print("Response from green agent:")
     print(response)
 
@@ -164,13 +174,13 @@ You should use the following task configuration:
                 trajectories_file = run_output_dir / "trajectories.json"
                 with open(trajectories_file, "w") as f:
                     json.dump(trajectories, f, indent=2)
-                print(f"\n✅ Saved trajectories to {trajectories_file}")
+                print(f"\nSaved trajectories to {trajectories_file}")
                 print(f"   Found {len(trajectories)} context IDs with message histories")
             elif trajectories_response.status_code == 404:
                 # Base agent doesn't have trajectories endpoint, that's fine
                 pass
             else:
-                print(f"\n⚠️  Warning: Failed to fetch trajectories (status {trajectories_response.status_code})")
+                print(f"\nWarning: Failed to fetch trajectories (status {trajectories_response.status_code})")
     except Exception as e:
         # Silently ignore trajectory fetch errors (not critical)
         pass
@@ -209,8 +219,8 @@ You should use the following task configuration:
     p_white.terminate()
     p_white.join()
     print("Agents terminated.")
-    print(f"\n✅ JSONL cache: {results_base}/{model.replace('/', '_')}.jsonl")
-    print(f"✅ Run outputs: {run_output_dir}")
+    print(f"\nJSONL cache: {results_base}/{model.replace('/', '_')}.jsonl")
+    print(f"Run outputs: {run_output_dir}")
     print(f"   - Sessions: {run_output_dir}/sessions")
     print(f"   - Agent logs: {run_output_dir}/agent-logs")
     print(f"   - Trajectories: {run_output_dir}/trajectories.json")

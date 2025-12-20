@@ -34,22 +34,22 @@ def cache_task_names(version="0.1.1", output_file="task_names_cache.json"):
     dataset_path = dataset_instance._get_cache_path("terminal-bench-core", version)
     
     if not dataset_path.exists():
-        print(f"📥 Dataset not found at: {dataset_path}")
-        print(f"⏳ Auto-downloading Terminal-Bench dataset version {version}...")
+        print(f"Dataset not found at: {dataset_path}")
+        print(f"Auto-downloading Terminal-Bench dataset version {version}...")
         print(f"   This may take a few minutes on first run...")
         
         # Initialize Dataset with name and version - will trigger download
         try:
             dataset = Dataset(name="terminal-bench-core", version=version)
             dataset_path = dataset.config.path
-            print(f"✅ Downloaded dataset to: {dataset_path}")
+            print(f"Downloaded dataset to: {dataset_path}")
         except Exception as e:
-            print(f"❌ Failed to download dataset: {e}")
+            print(f"Failed to download dataset: {e}")
             print(f"\nTry manually downloading with:")
             print(f"  python -c 'from terminal_bench.dataset.dataset import Dataset; Dataset(name=\"terminal-bench-core\", version=\"{version}\")'")
             return None
     else:
-        print(f"📦 Loading dataset from: {dataset_path}")
+        print(f"Loading dataset from: {dataset_path}")
         dataset = Dataset(path=dataset_path)
     
     # Extract task names
@@ -57,7 +57,7 @@ def cache_task_names(version="0.1.1", output_file="task_names_cache.json"):
     for task_path in dataset:
         task_names.append(task_path.name)
     
-    print(f"✅ Found {len(task_names)} tasks")
+    print(f"Found {len(task_names)} tasks")
     
     # Save to cache file
     cache_data = {
@@ -71,7 +71,7 @@ def cache_task_names(version="0.1.1", output_file="task_names_cache.json"):
     with open(output_path, "w") as f:
         json.dump(cache_data, f, indent=2)
     
-    print(f"💾 Cached {len(task_names)} task names to: {output_path}")
+    print(f"Cached {len(task_names)} task names to: {output_path}")
     print(f"\nFirst 10 tasks: {task_names[:10]}")
     
     return cache_data

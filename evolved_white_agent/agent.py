@@ -54,8 +54,9 @@ def prepare_white_agent_card(url):
 class TerminalBenchWhiteAgentExecutor(AgentExecutor):
     """White agent executor using text-based JSON tool calling."""
     
-    def __init__(self, model="gpt-5"):
+    def __init__(self, model="gpt-5", results_dir=None):
         self.model = model
+        self.results_dir = results_dir
         self.ctx_id_to_messages = {}  # Maintain history per context_id
         self.ctx_id_to_tokens = {}  # Track token usage per context_id
         self.ctx_id_to_turn_count = {}  # Track turns for reflection trigger
@@ -115,21 +116,21 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             === COMMAND EXECUTION GUIDELINES ===
 
             DO:
-            ✓ Start with information-gathering commands (ls, pwd, cat, head, etc.)
-            ✓ Use appropriate flags for better output (e.g., ls -la, grep -r)
-            ✓ Pipe commands for efficiency (e.g., cat file | grep pattern)
-            ✓ Check file existence before operations (test -f, ls)
-            ✓ Use absolute paths when ambiguity exists
-            ✓ Quote strings with spaces or special characters
-            ✓ Test with small samples before large operations
+            - Start with information-gathering commands (ls, pwd, cat, head, etc.)
+            - Use appropriate flags for better output (e.g., ls -la, grep -r)
+            - Pipe commands for efficiency (e.g., cat file | grep pattern)
+            - Check file existence before operations (test -f, ls)
+            - Use absolute paths when ambiguity exists
+            - Quote strings with spaces or special characters
+            - Test with small samples before large operations
 
             DON'T:
-            ✗ Run destructive commands without verification (rm -rf, dd)
-            ✗ Execute commands you don't understand
-            ✗ Ignore error messages or failed commands
-            ✗ Assume files/directories exist without checking
-            ✗ Output bash commands as text - always use tools
-            ✗ Make multiple changes without validation between them
+            x Run destructive commands without verification (rm -rf, dd)
+            x Execute commands you don't understand
+            x Ignore error messages or failed commands
+            x Assume files/directories exist without checking
+            x Output bash commands as text - always use tools
+            x Make multiple changes without validation between them
 
             === ERROR HANDLING ===
 
@@ -203,6 +204,19 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 
             Now await your task and solve it expertly.
         """
+        
+        # Load system prompt from file if it exists, otherwise save the default
+        if self.results_dir:
+            prompt_file = Path(self.results_dir) / "system_prompt.txt"
+            if prompt_file.exists():
+                self.logger.info(f"Loading system prompt from {prompt_file}")
+                with open(prompt_file, "r") as f:
+                    self.system_prompt = f.read()
+            else:
+                self.logger.info(f"Saving initial system prompt to {prompt_file}")
+                prompt_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(prompt_file, "w") as f:
+                    f.write(self.system_prompt)
 
     async def _reflect_and_improve_prompt(self, context_id: str) -> None:
         """Analyze recent interactions and improve the system prompt."""
@@ -222,10 +236,11 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 
                 {history_text}
 
-                ONLY suggest 2-3 SHORT, CONCRETE rules or guidelines (max 1-2 sentences each) if they meet ALL these criteria:
-                1. GENERALIZABLE: The rule applies broadly to MANY different tasks, not just this specific task
-                2. REUSABLE: You are confident this knowledge will help in FUTURE tasks
+                ONLY suggest SHORT, CONCRETE rules or guidelines (max 1-2 sentences each) if they meet ALL these criteria:
+                1. GENERALIZABLE: The rule applies broadly to MANY different future tasks, not just this specific task
+                2. REUSABLE: You are confident this knowledge will help in FUTURE tasks across different scenarios
                 3. ACTIONABLE: Clear, specific actions (e.g., terminal commands, installation procedures, best practices)
+                4. NOT ALREADY IN SYSTEM PROMPT: You must be certain this advice is NOT already covered in the system prompt
 
                 Good examples of what to suggest:
                 - Useful terminal commands or flags (e.g., "use 'command -v <tool>' to check if a tool is installed")
@@ -234,9 +249,10 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
 
                 DO NOT suggest:
                 - Task-specific advice (e.g., "for THIS particular log file, check...")
-                - Things already covered in the system prompt
+                - Anything already covered in the system prompt (check carefully!)
                 - Suggestions that only apply to one narrow situation
-
+                
+                You are NOT required to suggest 2-3 items. Suggest fewer or even nothing if no truly generalizable improvements are found.
                 If no generalizable improvements are found, respond with "N/A"
                 
                 Format your response as a bullet list of actionable guidelines, starting each with "- ". Keep it concise.
@@ -255,7 +271,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             """
 
             reflection_response = await acompletion(
-                model=model,
+                model=self.model,
                 messages=[{"role": "user", "content": reflection_prompt}],
                 temperature=0.0,
             )
@@ -266,11 +282,18 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             improvements = improvements_match.group(1).strip() if improvements_match else ""
             
             if improvements.strip() and improvements != "N/A":
-                self.system_prompt += f"\n\n=== LEARNED FROM EXPERIENCE ===\n{improvements.strip()}\n"
+                self.system_prompt += f"\n\n{improvements.strip()}\n"
                 self.logger.info(f"System prompt improved for context {context_id}. Added:\n{improvements.strip()}")
                 
                 assert messages[0]["role"] == "system", "The first message should be the system prompt"
                 messages[0]["content"] = self.system_prompt
+                
+                # Save updated system prompt to file
+                if self.results_dir:
+                    prompt_file = Path(self.results_dir) / "system_prompt.txt"
+                    self.logger.info(f"Saving updated system prompt to {prompt_file}")
+                    with open(prompt_file, "w") as f:
+                        f.write(self.system_prompt)
                 
         except Exception as e:
             self.logger.warning(f"Reflection failed for context {context_id}: {e}")
@@ -292,7 +315,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             self.ctx_id_to_turn_count[context.context_id] += 1
             turn_count = self.ctx_id_to_turn_count[context.context_id]
             
-            if turn_count % 10 == 0 and turn_count > 0:
+            if turn_count % 5 == 0 and turn_count > 0:
                 self.logger.info(f"Triggering reflection at turn {turn_count} for context {context.context_id}")
                 await self._reflect_and_improve_prompt(context.context_id)
             
@@ -351,13 +374,13 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
         raise NotImplementedError
 
 
-def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost", port=9002, model="gpt-5"):
+def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost", port=9002, model="gpt-5", results_dir=None):
     print(f"Starting white agent with model={model}...")
     
     base_url = os.getenv("AGENT_URL") or f"http://{host}:{port}"
     card = prepare_white_agent_card(base_url)
 
-    executor = TerminalBenchWhiteAgentExecutor(model=model)
+    executor = TerminalBenchWhiteAgentExecutor(model=model, results_dir=results_dir)
     request_handler = DefaultRequestHandler(
         agent_executor=executor,
         task_store=InMemoryTaskStore(),
@@ -368,7 +391,16 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
         http_handler=request_handler,
     )
 
-    uvicorn.run(app.build(), host=host, port=port)
+    uvicorn.run(
+        app.build(),
+        host=host,
+        port=port,
+        backlog=10000,  # Increase backlog for high-parallelism scenarios
+        limit_max_requests=100000,  # Allow many requests before restart
+        timeout_keep_alive=300,  # Keep connections alive for 5min (for long LLM calls)
+        h11_max_incomplete_event_size=100 * 1024 * 1024  # 100MB for large responses
+        # Note: NO limit_concurrency - we want to handle all concurrent requests, not reject them
+    )
 
 
 if __name__ == "__main__":

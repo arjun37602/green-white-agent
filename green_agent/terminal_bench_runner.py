@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from terminal_bench.terminal.docker_compose_manager import DockerComposeManager
+from terminal_bench.terminal.tmux_session import TmuxSession
 from terminal_bench.handlers.trial_handler import Task, TaskPaths
 from docker.models.containers import Container
 
@@ -62,43 +63,58 @@ class TaskExecutionResult:
 class GreenAgentTerminalBench:
     """Green agent for running Terminal Bench tasks against the white agent."""
     
-    # Tool definitions 
-    TOOLS = [
-        {
-            "type": "function",
-            "function": {
-                "name": "execute_bash_command",
-                "description": "Execute a bash command in the task container and return the output",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "The bash command to execute"
-                        }
-                    },
-                    "required": ["command"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "stop",
-                "description": "Stop the agent loop and proceed to task evaluation. Call this when you believe the task is complete.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reason": {
-                            "type": "string",
-                            "description": "Reason for stopping (optional)"
-                        }
-                    },
-                    "required": []
-                }
-            }
-        }
-    ]
+    # Prompt template for agent commands
+    # Uses terminus-json-plain format
+    PROMPT_TEMPLATE = """You are an AI assistant tasked with solving command-line tasks in a Linux environment. You will be given a task description and the output from previously executed commands. Your goal is to solve the task by providing batches of shell commands.
+
+Format your response as JSON with the following structure:
+
+{{
+  "analysis": "Analyze the current state based on the terminal output provided. What do you see? What has been accomplished? What still needs to be done?",
+  "plan": "Describe your plan for the next steps. What commands will you run and why? Be specific about what you expect each command to accomplish.",
+  "commands": [
+    {{
+      "keystrokes": "ls -la\n",
+      "duration": 0.1
+    }},
+    {{
+      "keystrokes": "cd project\n",
+      "duration": 0.1
+    }}
+  ],
+  "task_complete": false
+}}
+
+Required fields:
+- "analysis": Your analysis of the current situation
+- "plan": Your plan for the next steps
+- "commands": Array of command objects to execute
+
+Optional fields:
+- "task_complete": Boolean indicating if the task is complete (defaults to false if not present)
+
+Command object structure:
+- "keystrokes": String containing the exact keystrokes to send to the terminal (required)
+- "duration": Number of seconds to wait for the command to complete before the next command will be executed (defaults to 1.0 if not present)
+
+IMPORTANT: The text inside "keystrokes" will be used completely verbatim as keystrokes. Write commands exactly as you want them sent to the terminal:
+- Most bash commands should end with a newline (\n) to cause them to execute
+- For special key sequences, use tmux-style escape sequences:
+  - C-c for Ctrl+C
+  - C-d for Ctrl+D
+  - Escape for ESC key
+  - Up/Down/Left/Right for arrow keys
+
+The "duration" attribute specifies the number of seconds to wait for the command to complete (default: 1.0) before the next command will be executed. On immediate tasks (e.g., cd, ls, echo, cat) set a duration of 0.1 seconds. On commands (e.g., gcc, find, rustc) set a duration of 1.0 seconds. On slow commands (e.g., make, python3 [long running script], wget [file]) set an appropriate duration as you determine necessary.
+
+It is better to set a smaller duration than a longer duration. It is always possible to wait again if the prior output has not finished, by running {{"keystrokes": "", "duration": 10.0}} on subsequent requests to wait longer. Never wait longer than 60 seconds; prefer to poll to see intermediate result status.
+
+Important notes:
+- Each command's keystrokes are sent exactly as written to the terminal
+- Do not include extra whitespace before or after the keystrokes unless it's part of the intended command
+- The JSON must be valid - use proper escaping for quotes and special characters within strings
+- Commands array can be empty if you want to wait without taking action
+"""
     
     def __init__(self, white_agent_url: str = "http://localhost:8002", 
                  sandbox_base_path: Optional[str] = None,
@@ -120,6 +136,26 @@ class GreenAgentTerminalBench:
         
         # Initialize task evaluator
         self.task_evaluator = TaskEvaluator()
+        
+        # Create shared HTTP client for connection pooling
+        # Use very high timeout since individual requests can be long
+        # NOTE: WriteTimeout can occur if the server is busy processing other requests
+        # and can't quickly read the incoming request body.
+        # NOTE: ConnectTimeout can occur during high load when the server's backlog is full
+        # or when there's a brief pause between request batches.
+        import httpx
+        self._httpx_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=120.0,     # 120s to establish connection (increased - prevents ConnectTimeout during batch transitions)
+                read=None,         # No read timeout (some LLM calls are very long)
+                write=120.0,       # 120s to send request (prevents WriteTimeout during high load)
+                pool=120.0         # 120s to get connection from pool (increased for connection reuse)
+            ),
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=50  # Increased keepalive for better connection reuse
+            )
+        )
         
         # Initialize Terminal-Bench loader if dataset path provided
         self.tb_loader = None
@@ -161,81 +197,129 @@ class GreenAgentTerminalBench:
         self.logger.info(f"Loaded {len(tasks)} tasks from Terminal-Bench dataset")
         return tasks
     
-    def execute_tool(self, tool_name: str, arguments: Dict[str, Any], container: Container) -> Dict[str, Any]:
+    def _limit_output_length(self, output: str, max_bytes: int = 10000) -> str:
         """
-        Execute a tool call from the white agent.
+        Limit output to specified byte length, keeping first and last portions.
+        Prevents token overflow by truncating middle of large outputs.
         
         Args:
-            tool_name: Name of the tool to execute
-            arguments: Tool arguments
-            container: Docker container for execution
+            output: The terminal output to potentially truncate
+            max_bytes: Maximum allowed bytes (default 10000)
             
         Returns:
-            Tool execution result
+            str: Original output if under limit, or truncated with middle omitted
         """
-        if tool_name == "execute_bash_command":
-            return self._execute_bash_command_tool(arguments, container)
-        elif tool_name == "stop":
-            return self._stop_tool(arguments)
-        else:
-            self.logger.warning(f"Unknown tool: {tool_name}")
-            return {
-                "success": False,
-                "error": f"Unknown tool: {tool_name}"
-            }
+        if len(output.encode("utf-8")) <= max_bytes:
+            return output
+        
+        # Calculate portions (half each for first and last)
+        portion_size = max_bytes // 2
+        
+        # Convert to bytes for accurate splitting
+        output_bytes = output.encode("utf-8")
+        
+        # Get first portion
+        first_portion = output_bytes[:portion_size].decode("utf-8", errors="ignore")
+        
+        # Get last portion
+        last_portion = output_bytes[-portion_size:].decode("utf-8", errors="ignore")
+        
+        # Calculate omitted bytes
+        omitted_bytes = (
+            len(output_bytes)
+            - len(first_portion.encode("utf-8"))
+            - len(last_portion.encode("utf-8"))
+        )
+        
+        return (
+            f"{first_portion}\n[... output limited to {max_bytes} bytes; "
+            f"{omitted_bytes} bytes omitted ...]\n{last_portion}"
+        )
     
-    def _execute_bash_command_tool(self, arguments: Dict[str, Any], container: Container) -> Dict[str, Any]:
-        """Execute bash command tool."""
-        if not container:
+    def execute_commands_batch(self, commands: List[Dict[str, Any]], session: TmuxSession) -> Dict[str, Any]:
+        """
+        Execute a batch of commands in the tmux session.
+        
+        Process:
+        1. Execute all commands in sequence with their durations
+        2. Capture incremental output once at the end (accumulates all command output)
+        
+        Args:
+            commands: List of command dicts with 'keystrokes' and 'duration'
+            session: TmuxSession for execution
+            
+        Returns:
+            Result dict with terminal output from all commands
+        """
+        if not session:
             return {
                 "success": False,
-                "error": "No active container"
+                "error": "No active tmux session",
+                "output": ""
             }
-        
-        command = arguments.get("command", "")
-        if not command:
-            return {
-                "success": False,
-                "error": "No command provided"
-            }
-        
-        self.logger.info(f"Tool: execute_bash_command - {command}")
         
         try:
-            start_time = time.time()
-            exec_result = container.exec_run(
-                ["bash", "-c", command],
-                workdir="/app"
-            )
-            execution_time = time.time() - start_time
+            # Execute all commands in sequence
+            for cmd in commands:
+                keystrokes = cmd.get("keystrokes", "")
+                duration = cmd.get("duration", 1.0)
+                
+                # Cap duration at 60 seconds to prevent excessive waits
+                actual_duration = min(duration, 60.0)
+                
+                # Process escape sequences: convert literal \n to actual newlines
+                try:
+                    # Use unicode_escape to convert literal escape sequences
+                    keystrokes_processed = keystrokes.encode('utf-8').decode('unicode_escape')
+                except (UnicodeDecodeError, AttributeError):
+                    # If decoding fails, use original keystrokes
+                    keystrokes_processed = keystrokes
+                
+                self.logger.info(f"Executing keystrokes: {repr(keystrokes_processed)[:100]} (duration: {actual_duration}s)")
+                
+                # Send keystrokes to tmux (non-blocking execution)
+                session.send_keys(
+                    keystrokes_processed,
+                    block=False,
+                    min_timeout_sec=actual_duration
+                )
             
-            stdout_output = exec_result.output.decode('utf-8', errors='replace') if exec_result.output else ""
+            # Capture incremental output once after all commands complete
+            # This accumulates output from all commands in the batch
+            terminal_output = session.get_incremental_output()
+            
+            # Limit output length to prevent token overflow
+            terminal_output = self._limit_output_length(terminal_output)
             
             return {
-                "success": exec_result.exit_code == 0,
-                "command": command,
-                "stdout": stdout_output,
-                "stderr": "",  # Docker exec_run combines stdout and stderr
-                "returncode": exec_result.exit_code,
-                "execution_time": execution_time,
-                # Include error message when command fails
-                "error": stdout_output if exec_result.exit_code != 0 else None
+                "success": True,
+                "output": terminal_output,
+                "num_commands": len(commands)
             }
-        except Exception as e:
+        except TimeoutError as e:
+            # If any command times out, still return the output so far
+            self.logger.warning(f"Command timeout: {e}")
+            try:
+                terminal_output = session.get_incremental_output()
+            except:
+                terminal_output = session.capture_pane(capture_entire=False)
+            
+            # Limit output length
+            terminal_output = self._limit_output_length(terminal_output)
+            
             return {
                 "success": False,
-                "error": str(e)
+                "error": f"Timeout: {str(e)}",
+                "output": terminal_output
+            }
+        except Exception as e:
+            self.logger.error(f"Error executing commands: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "output": ""
             }
     
-    def _stop_tool(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Stop tool - signals early termination."""
-        reason = arguments.get("reason", "Agent signaled completion")
-        self.logger.info(f"Tool: stop - {reason}")
-        return {
-            "success": True,
-            "message": "Agent loop will stop",
-            "reason": reason
-        }
 
     
     async def execute_multiple_tasks_parallel(self, task_tuples: List[Tuple[Task, TaskPaths]], 
@@ -298,9 +382,21 @@ class GreenAgentTerminalBench:
             async with self.task_semaphore:
                 return await self.execute_task_with_sandbox(task, task_paths, output_directory)
         
-        # Run all tasks in parallel
+        # Launch tasks with staggered start to prevent overwhelming the white agent
+        # with simultaneous initial connections
+        stagger_delay = 1.0  # 1 second delay between launches
+        self.logger.info(f"Launching {len(tasks_to_run)} tasks with {stagger_delay}s stagger delay to prevent connection burst")
+        task_coroutines = []
+        
+        for i, (task, task_paths) in enumerate(tasks_to_run):
+            task_coroutines.append(execute_with_semaphore(task, task_paths))
+            # Add small delay after launching each task (except the last one)
+            if i < len(tasks_to_run) - 1:
+                await asyncio.sleep(stagger_delay)
+        
+        # Wait for all tasks to complete
         new_results = await asyncio.gather(
-            *[execute_with_semaphore(task, task_paths) for task, task_paths in tasks_to_run],
+            *task_coroutines,
             return_exceptions=True
         )
         
@@ -373,8 +469,9 @@ class GreenAgentTerminalBench:
             agent_logs_path=agent_logs_path
         )
         
-        # Each task has its own container (for parallel execution)
+        # Each task has its own container and tmux session (for parallel execution)
         current_container = None
+        tmux_session = None
         
         try:
             # Start container
@@ -383,138 +480,178 @@ class GreenAgentTerminalBench:
             current_container = container
             self.logger.info(f"Container started: {container.name}")
             
+            # Create and start tmux session in the container
+            self.logger.info(f"Creating tmux session for task {task_id}")
+            tmux_session = TmuxSession(
+                session_name=f"agent_{sanitized_task_id}",
+                container=container,
+                commands_path=None,  # Don't log commands to file
+                disable_recording=True,  # Disable asciinema recording for performance
+                user=""  # Run as default user
+            )
+            tmux_session.start()
+            self.logger.info(f"Tmux session started")
+            
+            # Get task-specific timeout (default to 15 minutes if not specified)
+            agent_timeout_sec = task.max_agent_timeout_sec if hasattr(task, 'max_agent_timeout_sec') else 900.0
+            self.logger.info(f"[{task_id}] Agent timeout: {agent_timeout_sec}s")
+            
             # Iteratively call white agent until task complete or max iterations reached
-            max_iterations = 50
+            max_iterations = 25
             iteration = 0
             should_stop = False
             context_id = f"ctx-{task_id}-{uuid.uuid4().hex[:8]}"  # Unique context ID for this task
             
-            self.logger.info(f"Starting agent loop (max {max_iterations} iterations) with context_id={context_id}")
+            self.logger.info(f"Starting agent loop (max {max_iterations} iterations, timeout {agent_timeout_sec}s) with context_id={context_id}")
             
-            # Track tool results from previous iteration only
-            previous_tool_results = None
+            # Track terminal output from previous iteration
+            previous_terminal_output = None
             white_agent_response = None  # Initialize to avoid UnboundLocalError if loop breaks early
+            agent_timed_out = False
             
-            while not should_stop and iteration < max_iterations:
-                iteration += 1
-                self.logger.info(f"[{task_id}] Iteration {iteration}/{max_iterations}")
-                
-                # Initialize interaction for this iteration
-                interaction = {
-                    "iteration": iteration,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                
-                # Call white agent
-                try:
-                    if iteration == 1:
-                        # First iteration: send initial task with tool definitions
-                        self.logger.info(f"[{task_id}] Sending initial task with tool definitions")
-                        white_agent_response, initial_interaction = await self.send_initial_task(task, task_paths, context_id, current_container)
-                        # Merge initial interaction data
-                        interaction.update(initial_interaction)
-                        trajectory_data["interactions"].append(interaction) #add initial task
-                    else:
-                        # Subsequent iterations: send tool results or error
-                        if previous_tool_results is None or len(previous_tool_results) == 0:
-                            # White agent didn't send tool calls - send error
-                            self.logger.warning(f"[{task_id}] White agent did not send tool calls in previous iteration")
-                            interaction["user"] = {
-                                "type": "error",
-                                "error_message": "You must send a tool command"
-                            }
-                            trajectory_data["interactions"].append(interaction) #add error
-                            white_agent_response = await self.send_tool_results(
-                                task, task_paths, error_message="You must send a tool command", context_id=context_id
-                            )
+            # Wrap agent loop in timeout
+            try:
+                agent_loop_start = time.time()
+                while not should_stop and iteration < max_iterations and (time.time() - agent_loop_start) < agent_timeout_sec:
+                    iteration += 1
+                    self.logger.info(f"[{task_id}] Iteration {iteration}/{max_iterations}")
+                    
+                    # Initialize interaction for this iteration
+                    interaction = {
+                        "iteration": iteration,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    
+                    # Call white agent
+                    try:
+                        if iteration == 1:
+                            # First iteration: send initial task with prompt
+                            self.logger.info(f"[{task_id}] Sending initial task")
+                            white_agent_response, initial_interaction = await self.send_initial_task(task, task_paths, context_id, tmux_session)
+                            # Merge initial interaction data
+                            interaction.update(initial_interaction)
+                            trajectory_data["interactions"].append(interaction) #add initial task
                         else:
-                            # Send tool results from previous iteration
-                            white_agent_response = await self.send_tool_results(
-                                task, task_paths, tool_results=previous_tool_results, context_id=context_id
-                            )
+                            # Subsequent iterations: send terminal output
+                            if previous_terminal_output is None:
+                                # No terminal output from previous iteration
+                                self.logger.warning(f"[{task_id}] No terminal output from previous iteration")
+                                white_agent_response = await self.send_terminal_output(
+                                    task, task_paths, error_message="No commands were executed in previous iteration", context_id=context_id
+                                )
+                            else:
+                                # Send terminal output from previous iteration
+                                white_agent_response = await self.send_terminal_output(
+                                    task, task_paths, terminal_output=previous_terminal_output, context_id=context_id
+                                )
+                        
+                        # Extract token usage from metadata
+                        if "result" in white_agent_response and "message" in white_agent_response["result"]:
+                            message = white_agent_response["result"]["message"]
+                            if isinstance(message, dict) and "metadata" in message:
+                                metadata = message["metadata"]
+                                if "cumulative_tokens" in metadata:
+                                    total_tokens = metadata["cumulative_tokens"]
+                                    self.logger.debug(f"[{task_id}] Token usage: {total_tokens} cumulative")
+                        
+                        # Log white agent response (only if not iteration 1, since already logged above)
+                        if iteration > 1:
+                            interaction["assistant"] = white_agent_response
+                            trajectory_data["interactions"].append(interaction) #add assistant response
+                        
+                    except Exception as e:
+                        import traceback as tb
+                        error_type = type(e).__name__
+                        error_msg = str(e)
+                        
+                        # Detailed error logging
+                        self.logger.error(f"[{task_id}] Error communicating with white agent")
+                        self.logger.error(f"[{task_id}] Error type: {error_type}")
+                        self.logger.error(f"[{task_id}] Error message: {error_msg}")
+                        self.logger.error(f"[{task_id}] Iteration: {iteration}")
+                        self.logger.error(f"[{task_id}] Full traceback:\n{tb.format_exc()}")
+                        
+                        # Check for specific error types
+                        if "503" in error_msg:
+                            self.logger.error(f"[{task_id}] 503 SERVICE UNAVAILABLE - White agent may be overloaded or crashed")
+                        elif "connection" in error_msg.lower():
+                            self.logger.error(f"[{task_id}] CONNECTION ERROR - White agent may be unreachable")
+                        elif "timeout" in error_msg.lower():
+                            self.logger.error(f"[{task_id}] TIMEOUT ERROR - Request took too long")
+                        
+                        self.logger.warning(f"[{task_id}] Breaking loop due to white agent error")
+                        # interaction is already defined at the start of the loop
+                        interaction["error"] = str(e)
+                        trajectory_data["interactions"].append(interaction)
+                        break
                     
-                    # Extract token usage from metadata
-                    if "result" in white_agent_response and "message" in white_agent_response["result"]:
-                        message = white_agent_response["result"]["message"]
-                        if isinstance(message, dict) and "metadata" in message:
-                            metadata = message["metadata"]
-                            if "cumulative_tokens" in metadata:
-                                total_tokens = metadata["cumulative_tokens"]
-                                self.logger.debug(f"[{task_id}] Token usage: {total_tokens} cumulative")
+                    # Extract commands from white agent response
+                    commands, is_task_complete = self._extract_commands(white_agent_response)
                     
-                    # Log white agent response (only if not iteration 1, since already logged above)
-                    if iteration > 1:
-                        interaction["assistant"] = white_agent_response
-                        trajectory_data["interactions"].append(interaction) #add assistant response
+                    # Log extracted commands
+                    self.logger.info(f"[{task_id}] Extracted {len(commands)} commands, task_complete={is_task_complete}")
+                    for i, cmd in enumerate(commands):
+                        self.logger.info(f"[{task_id}] Command {i+1}: keystrokes={repr(cmd.get('keystrokes', ''))[:100]}, duration={cmd.get('duration', 1.0)}s")
                     
-                except Exception as e:
-                    self.logger.error(f"[{task_id}] Error communicating with white agent: {e}")
-                    self.logger.warning(f"[{task_id}] Breaking loop due to white agent error")
-                    # interaction is already defined at the start of the loop
-                    interaction["error"] = str(e)
+                    # Check for no commands
+                    if not commands:
+                        # If task is complete and no commands, that's fine - exit cleanly
+                        if is_task_complete:
+                            should_stop = True
+                            self.logger.info(f"[{task_id}] Agent marked task as complete with no final commands - terminating after iteration {iteration}")
+                            break
+                        else:
+                            # No commands and task not complete - this is an error
+                            self.logger.warning(f"[{task_id}] No commands in response - will send error next iteration")
+                            previous_terminal_output = None
+                            continue
+                    
+                    # Execute all commands as a batch
+                    self.logger.info(f"[{task_id}] Executing batch of {len(commands)} commands")
+                    batch_result = self.execute_commands_batch(commands, tmux_session)
+                    
+                    # Log the batch execution result
+                    if batch_result.get('success'):
+                        terminal_output = batch_result.get('output', '').strip()
+                        if terminal_output:
+                            self.logger.info(f"[{task_id}] Terminal output:\n{terminal_output}")
+                        else:
+                            self.logger.info(f"[{task_id}] Commands executed (no output)")
+                    else:
+                        error = batch_result.get('error', 'Unknown error')
+                        self.logger.error(f"[{task_id}] Command batch failed: {error}")
+                        # Still use the partial output if available
+                        terminal_output = batch_result.get('output', '')
+                    
+                    # Store command execution info
+                    interaction["command_executions"] = {
+                        "commands": commands,
+                        "result": batch_result
+                    }
+                    
+                    # Add interaction to trajectory
                     trajectory_data["interactions"].append(interaction)
-                    break
-                
-                # Extract and execute tool calls from white agent response
-                tool_calls = self._extract_tool_calls(white_agent_response)
-                
-                if not tool_calls:
-                    self.logger.warning(f"[{task_id}] No tool calls in response - will send error next iteration")
-                    previous_tool_results = None
-                    continue
-                
-                # Execute each tool call
-                iteration_tool_results = []
-                for tool_call in tool_calls:
-                    tool_name = tool_call.get("name")
-                    tool_arguments = tool_call.get("arguments", {})
-                    tool_call_id = tool_call.get("id", f"call_{iteration}")
                     
-                    # Execute the tool (pass current_container)
-                    tool_result = self.execute_tool(tool_name, tool_arguments, current_container)
+                    # Store terminal output for next iteration
+                    previous_terminal_output = batch_result.get('output', '')
                     
-                    # Log the tool result
-                    if tool_result.get('success'):
-                        output = tool_result.get('stdout', '').strip()
-                        if output:
-                            self.logger.info(f"[{task_id}] Tool result: SUCCESS\n{output[:200]}{'...' if len(output) > 200 else ''}")
-                        else:
-                            self.logger.info(f"[{task_id}] Tool result: SUCCESS (no output)")
-                    else:
-                        # Show both error and stdout for failed commands
-                        error = tool_result.get('error', 'Unknown error')
-                        stdout = tool_result.get('stdout', '').strip()
-                        if stdout:
-                            self.logger.error(f"[{task_id}] Tool result: FAILED (exit code {tool_result.get('returncode', '?')})\nOutput:\n{stdout[:200]}")
-                        else:
-                            self.logger.error(f"[{task_id}] Tool result: FAILED - {error}")
-                    
-                    # Check if it's the stop tool
-                    if tool_name == "stop":
+                    # Check if task is complete AFTER executing commands
+                    if is_task_complete:
                         should_stop = True
-                    
-                    # Store tool result
-                    iteration_tool_results.append({
-                        "tool_call_id": tool_call_id,
-                        "tool_name": tool_name,
-                        "arguments": tool_arguments,
-                        "result": tool_result
-                    })
-                
-                # Log tool execution results
-                interaction["tool_executions"] = iteration_tool_results
-                
-                # Store results for next iteration and for history
-                previous_tool_results = iteration_tool_results
-                
-                # Add interaction to trajectory
-                trajectory_data["interactions"].append(interaction)
-                
-                if should_stop:
-                    self.logger.info(f"[{task_id}] Agent called stop tool - terminating after iteration {iteration}")
-                    break
+                        self.logger.info(f"[{task_id}] Agent marked task as complete - terminating after iteration {iteration}")
+                        break
             
-            if iteration >= max_iterations:
+            except Exception as e:
+                self.logger.error(f"[{task_id}] Error in agent loop: {e}")
+                # Continue to evaluation
+            
+            # Check why loop ended
+            elapsed_time = time.time() - agent_loop_start
+            if elapsed_time >= agent_timeout_sec:
+                self.logger.warning(f"[{task_id}] Agent timed out after {elapsed_time:.2f}s (limit: {agent_timeout_sec}s)")
+                agent_timed_out = True
+                trajectory_data["agent_timeout"] = True
+            elif iteration >= max_iterations:
                 self.logger.warning(f"[{task_id}] Reached max iterations ({max_iterations}) without completion")
             
             self.logger.info(f"[{task_id}] Starting task evaluation...")
@@ -523,7 +660,7 @@ class GreenAgentTerminalBench:
                 # Only evaluate if we have a white agent response (loop didn't break immediately)
                 if white_agent_response is not None:
                     evaluation_result = self.task_evaluator.evaluate(
-                        task_id, task_paths, current_container, white_agent_response
+                        task_id, task_paths, current_container, white_agent_response, task=task, session=tmux_session
                     )
                 else:
                     self.logger.warning(f"[{task_id}] No white agent response received, skipping evaluation")
@@ -548,9 +685,16 @@ class GreenAgentTerminalBench:
                     "error": str(e)
                 }
             
-            # Clean up container
-            self.logger.info(f"[{task_id}] Cleaning up container...")
+            # Clean up tmux session and container
+            self.logger.info(f"[{task_id}] Cleaning up tmux session and container...")
             try:
+                if tmux_session:
+                    try:
+                        tmux_session.stop()
+                        self.logger.info(f"[{task_id}] Tmux session stopped")
+                    except Exception as e:
+                        self.logger.warning(f"[{task_id}] Error stopping tmux session: {e}")
+                
                 container_manager.stop()
                 self.logger.info(f"[{task_id}] Container cleaned up")
             except Exception as e:
@@ -616,7 +760,13 @@ class GreenAgentTerminalBench:
             trajectory_data["error"] = str(e)
             trajectory_data["end_time"] = datetime.now(timezone.utc).isoformat()
             
-            # Clean up container on error
+            # Clean up tmux session and container on error
+            if 'tmux_session' in locals() and tmux_session:
+                try:
+                    tmux_session.stop()
+                except:
+                    pass
+            
             if 'container_manager' in locals():
                 try:
                     container_manager.stop()
@@ -659,79 +809,115 @@ class GreenAgentTerminalBench:
             
             return failed_result
     
-    def _extract_tool_calls(self, white_agent_response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _extract_commands(self, white_agent_response: Dict[str, Any]) -> tuple[List[Dict[str, Any]], bool]:
         """
-        Extract tool calls from white agent response and normalize to simplified format.
+        Extract commands from white agent response.
         
-        Accepts OpenAI format and converts to simplified format for internal use.
+        Parses JSON response to extract:
+        - commands: List of {keystrokes, duration} dicts
+        - task_complete: Boolean flag
         
         Args:
             white_agent_response: Response from white agent
             
         Returns:
-            List of tool calls in simplified format: 
-            [{"id": "call_123", "name": "execute_bash_command", "arguments": {...}}]
-            Note: arguments is a dict, not a JSON string (unlike OpenAI format)
+            Tuple of (commands_list, is_task_complete)
+            commands_list: [{"keystrokes": "ls\n", "duration": 0.1}, ...]
+            is_task_complete: True if task is marked complete
         """
-        tool_calls = []
+        commands = []
+        is_task_complete = False
         
         try:
-            # Check for OpenAI-style tool_calls in message
+            # Extract assistant's response text
+            assistant_text = ""
             if "result" in white_agent_response:
                 result = white_agent_response["result"]
                 
-                # Check for tool_calls in the history/message
+                # Check history for assistant message
                 if "history" in result:
                     for message in result["history"]:
-                        if isinstance(message, dict) and "tool_calls" in message:
-                            for tc in message["tool_calls"]:
-                                tool_calls.append({
-                                    "id": tc.get("id", f"call_{len(tool_calls)}"),
-                                    "name": tc.get("function", {}).get("name") or tc.get("name"),
-                                    "arguments": json.loads(tc.get("function", {}).get("arguments", "{}")) if "function" in tc else tc.get("arguments", {})
-                                })
+                        if isinstance(message, dict) and message.get("role") == "assistant":
+                            assistant_text = message.get("content", "")
+                            break
                 
-                # Check for artifacts with tool_calls (A2A format)
-                if "artifacts" in result:
-                    for artifact in result["artifacts"]:
-                        # Check if tool_calls are directly in artifact
-                        if "tool_calls" in artifact:
-                            for tc in artifact["tool_calls"]:
-                                tool_calls.append({
-                                    "id": tc.get("id", f"call_{len(tool_calls)}"),
-                                    "name": tc.get("name"),
-                                    "arguments": tc.get("arguments", {})
-                                })
-                        # Check if artifact contains JSON text with tool_calls
-                        elif "parts" in artifact:
-                            for part in artifact["parts"]:
-                                if part.get("kind") == "text":
-                                    try:
-                                        text_data = json.loads(part.get("text", "{}"))
-                                        if "tool_calls" in text_data:
-                                            for tc in text_data["tool_calls"]:
-                                                tool_calls.append({
-                                                    "id": tc.get("id", f"call_{len(tool_calls)}"),
-                                                    "name": tc.get("function", {}).get("name") or tc.get("name"),
-                                                    "arguments": json.loads(tc.get("function", {}).get("arguments", "{}")) if "function" in tc else tc.get("arguments", {})
-                                                })
-                                    except json.JSONDecodeError:
-                                        pass
+                # Also check message directly
+                if not assistant_text and "message" in result:
+                    message = result["message"]
+                    if isinstance(message, dict) and "parts" in message:
+                        from a2a.utils import get_text_parts
+                        text_parts = get_text_parts(message["parts"])
+                        assistant_text = "\n".join(text_parts) if text_parts else ""
             
-            if tool_calls:
-                self.logger.info(f"Extracted {len(tool_calls)} tool calls")
-                for tc in tool_calls:
-                    self.logger.info(f"  - {tc['name']}({list(tc.get('arguments', {}).keys())})")
+            if not assistant_text:
+                self.logger.warning("No assistant text found in response")
+                return [], False
+            
+            # Parse JSON from response (look for {...} pattern)
+            # Try to extract JSON block
+            json_match = None
+            try:
+                # Try parsing the whole thing as JSON first
+                response_data = json.loads(assistant_text)
+                json_match = response_data
+            except json.JSONDecodeError:
+                # Look for JSON in text
+                import re
+                json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+                matches = re.findall(json_pattern, assistant_text, re.DOTALL)
+                for match in matches:
+                    try:
+                        response_data = json.loads(match)
+                        if "commands" in response_data:
+                            json_match = response_data
+                            break
+                    except json.JSONDecodeError:
+                        continue
+            
+            if not json_match:
+                self.logger.warning(f"No valid JSON found in response: {assistant_text[:200]}")
+                return [], False
+            
+            # Extract commands array
+            if "commands" in json_match and isinstance(json_match["commands"], list):
+                for cmd_data in json_match["commands"]:
+                    if not isinstance(cmd_data, dict):
+                        continue
+                    
+                    keystrokes = cmd_data.get("keystrokes", "")
+                    duration = cmd_data.get("duration", 1.0)
+                    
+                    # Validate and sanitize
+                    if not isinstance(keystrokes, str):
+                        self.logger.warning(f"Invalid keystrokes type: {type(keystrokes)}")
+                        continue
+                    
+                    try:
+                        duration = float(duration)
+                    except (ValueError, TypeError):
+                        self.logger.warning(f"Invalid duration value: {duration}, using 1.0")
+                        duration = 1.0
+                    
+                    commands.append({
+                        "keystrokes": keystrokes,
+                        "duration": duration
+                    })
+            
+            # Extract task_complete flag
+            is_task_complete = json_match.get("task_complete", False)
+            
+            if commands:
+                self.logger.info(f"Extracted {len(commands)} commands, task_complete={is_task_complete}")
             
         except Exception as e:
-            self.logger.error(f"Error extracting tool calls: {e}")
+            self.logger.error(f"Error extracting commands: {e}")
             import traceback
             self.logger.debug(traceback.format_exc())
         
-        return tool_calls
+        return commands, is_task_complete
     
     
-    async def send_initial_task(self, task: Task, task_paths: TaskPaths, context_id: str, container: Container) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    async def send_initial_task(self, task: Task, task_paths: TaskPaths, context_id: str, session: TmuxSession) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Send initial task with tool definitions to the white agent using A2A SDK.
         
@@ -739,7 +925,7 @@ class GreenAgentTerminalBench:
             task: Terminal Bench Task object
             task_paths: Terminal Bench TaskPaths object
             context_id: Context ID for this conversation
-            container: Docker container (unused but kept for signature consistency)
+            session: TmuxSession (unused but kept for signature consistency)
             
         Returns:
             Tuple of (white agent response, interaction dict with logged request)
@@ -751,108 +937,60 @@ class GreenAgentTerminalBench:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
-            # Build initial task message with tools in prompt (text-based, not native tool calling)
+            # Build initial task message
             task_id = task_paths.input_path.name
-            tools_description = json.dumps(self.TOOLS, indent=2)
-            task_message = f"""Terminal Bench Task: {task_id}
-
-Description: {task.category} task
-
-Instructions:
-You are a terminal agent that can execute bash commands.
+            
+            # Get initial terminal state
+            try:
+                terminal_state = session.get_incremental_output()
+            except:
+                terminal_state = session.capture_pane(capture_entire=False)
+            
+            # Use prompt template
+            task_message = self.PROMPT_TEMPLATE + f"""
+Task Description:
 {task.instruction}
 
-Environment:
-Working Directory: /app
-
-You have access to the following tools:
-{tools_description}
-
-Please respond in JSON format. Wrap your response in <json>...</json> tags.
-The JSON should contain:
-- "name": the tool name (e.g., "execute_bash_command" or "stop")
-- "kwargs": object with the tool arguments
-
-Example response format:
-<json>
-{{"name": "execute_bash_command", "kwargs": {{"command": "ls -la"}}}}
-</json>
-
-Complete this task using the available tools."""
+Current terminal state:
+{terminal_state}"""
             
             # Log the request
             self.logger.info(f"=== SENDING TO WHITE AGENT (INITIAL TASK) ===")
             self.logger.info(f"URL: {self.white_agent_url}")
-            self.logger.info(f"Tools provided: {len(self.TOOLS)} tools")
-            self.logger.debug(f"Tools: {tools_description}")
-            self.logger.info(f"Message preview: {task_message[:200]}...")
+            self.logger.info(f"Task: {task_id}")
+            self.logger.info(f"Message preview: {task_message[:300]}...")
             
             # Send using A2A SDK (no tools parameter - all in text)
+            # Use task timeout with buffer for overhead
+            timeout = max(600.0, task.max_agent_timeout_sec * 1.5)
             response = await send_message(
                 self.white_agent_url,
                 task_message,
-                context_id=context_id
+                context_id=context_id,
+                timeout=timeout,
+                httpx_client=self._httpx_client
             )
             
             # Convert response to dict for compatibility with existing code
             from a2a.types import SendMessageSuccessResponse, Message
-            from utils import parse_tags
             res_root = response.root
             if isinstance(res_root, SendMessageSuccessResponse):
                 # Extract the assistant's response text
                 assistant_text = self._extract_text_from_message(res_root.result) if isinstance(res_root.result, Message) else ""
                 
-                # Parse tool calls from <json>...</json> tags (tau-bench format)
-                tool_calls_list = []
-                try:
-                    from utils import parse_answer
-                    json_content = parse_answer(assistant_text)
-                    if json_content:
-                        self.logger.info(f"Parsing JSON content: {json_content}")
-                        
-                        # Try to parse the JSON, if it fails due to extra closing braces, strip them
-                        try:
-                            response_data = json.loads(json_content)
-                        except json.JSONDecodeError as e:
-                            # Check if it's an "Extra data" error and try stripping trailing braces
-                            if "Extra data" in str(e):
-                                # Remove trailing } characters one by one until valid JSON
-                                cleaned = json_content.rstrip()
-                                while cleaned.endswith('}') and len(cleaned) > 0:
-                                    try:
-                                        response_data = json.loads(cleaned)
-                                        self.logger.info(f"Successfully parsed after removing extra braces")
-                                        break
-                                    except json.JSONDecodeError:
-                                        cleaned = cleaned[:-1].rstrip()
-                                else:
-                                    raise e
-                            else:
-                                raise
-                        
-                        if isinstance(response_data, dict):
-                            # Tau-bench format: {"name": "tool_name", "kwargs": {...}}
-                            if "name" in response_data and "kwargs" in response_data:
-                                tool_calls_list = [{
-                                    "name": response_data["name"],
-                                    "arguments": response_data["kwargs"]
-                                }]
-                            # Also support array format for backwards compatibility
-                            elif "tool_calls" in response_data:
-                                tool_calls_list = response_data["tool_calls"]
-                except (json.JSONDecodeError, KeyError) as e:
-                    self.logger.warning(f"Failed to parse JSON from response: {e}")
-                    self.logger.info(f"Raw assistant response: {assistant_text}")
+                # Log full LLM response
+                self.logger.info(f"=== WHITE AGENT RESPONSE (INITIAL) ===")
+                self.logger.info(f"Full response:\n{assistant_text}")
+                self.logger.info(f"=== END WHITE AGENT RESPONSE ===")
                 
-                # Build the result in a format compatible with existing code
+                # Build the result in a format compatible with _extract_commands
                 result = {
                     "jsonrpc": "2.0",
                     "id": res_root.id,
                     "result": {
                         "message": res_root.result.model_dump() if isinstance(res_root.result, Message) else res_root.result,
                         "context_id": res_root.result.context_id if isinstance(res_root.result, Message) else None,
-                        # Include tool_calls in history for extraction
-                        "history": [{"role": "assistant", "content": assistant_text, "tool_calls": tool_calls_list}],
+                        "history": [{"role": "assistant", "content": assistant_text}],
                         "artifacts": []
                     }
                 }
@@ -861,7 +999,7 @@ Complete this task using the available tools."""
                 interaction["user"] = {
                     "type": "initial_task",
                     "message": task_message,
-                    "tools": self.TOOLS
+                    "format": "terminus-json-plain"
                 }
                 
                 self.logger.debug(f"White agent initial response received")
@@ -880,7 +1018,21 @@ Complete this task using the available tools."""
                     raise Exception(error_msg)
                 
         except Exception as e:
-            self.logger.error(f"Failed to send initial task to white agent: {e}")
+            import traceback as tb
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            self.logger.error(f"Failed to send initial task to white agent")
+            self.logger.error(f"Error type: {error_type}")
+            self.logger.error(f"Error message: {error_msg}")
+            self.logger.error(f"Full traceback:\n{tb.format_exc()}")
+            
+            # Check if white agent is still reachable
+            if "503" in error_msg:
+                self.logger.error(f"503 SERVICE UNAVAILABLE - White agent server may have crashed")
+            elif "connection" in error_msg.lower() or "refused" in error_msg.lower():
+                self.logger.error(f"CONNECTION ERROR - White agent may not be running")
+            
             raise
     
     def _extract_text_from_message(self, message) -> str:
@@ -891,100 +1043,59 @@ Complete this task using the available tools."""
             return "\n".join(text_parts) if text_parts else ""
         return str(message)
     
-    async def send_tool_results(self, task: Task, task_paths: TaskPaths,
-                         tool_results: Optional[List[Dict[str, Any]]] = None,
+    async def send_terminal_output(self, task: Task, task_paths: TaskPaths,
+                         terminal_output: Optional[str] = None,
                          error_message: Optional[str] = None,
                          context_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Send tool results or error message to the white agent using plain text format.
+        Send terminal output to the white agent.
+        
+        After executing commands, the agent receives the terminal output text
+        to understand what happened and decide the next steps.
         
         Args:
             task: Terminal Bench Task object
             task_paths: Terminal Bench TaskPaths object
-            tool_results: Tool execution results from previous iteration
-            error_message: Error message if white agent didn't send tool calls
+            terminal_output: Terminal output text from previous iteration
+            error_message: Error message if white agent didn't send commands
             context_id: Context ID to maintain conversation
             
         Returns:
             White agent response
         """
         try:
-            # Build message based on input - simple plain text like tau-bench
+            # Build message with terminal output or error
             if error_message:
                 message_text = f"Error: {error_message}"
-            elif tool_results:
-                # Simple text format - just send the tool results
-                results_text = []
-                for tr in tool_results:
-                    tool_name = tr.get('tool_name', 'unknown')
-                    result = tr.get('result', {})
-                    if result.get('success'):
-                        output = result.get('stdout', '').strip()
-                        results_text.append(f"Tool call result for {tool_name}:\n{output}")
-                    else:
-                        error = result.get('error', 'Unknown error').strip()
-                        results_text.append(f"Tool call result for {tool_name}:\nError: {error}")
-                message_text = "\n\n".join(results_text)
-                self.logger.debug(f"Sending {len(tool_results)} tool results in plain text")
+            elif terminal_output is not None:
+                # Send the terminal output directly
+                message_text = terminal_output
+                self.logger.debug(f"Sending terminal output ({len(terminal_output)} chars)")
             else:
-                raise ValueError("Must provide either tool_results or error_message")
+                raise ValueError("Must provide either terminal_output or error_message")
             
             # Send using A2A SDK
+            # Use task timeout with buffer for overhead
+            timeout = max(600.0, task.max_agent_timeout_sec * 1.5)
             response = await send_message(
                 self.white_agent_url,
                 message_text,
-                context_id=context_id
+                context_id=context_id,
+                timeout=timeout,
+                httpx_client=self._httpx_client
             )
             
-            # Convert response to dict for compatibility
+            # Convert response to dict for compatibility with _extract_commands
             from a2a.types import SendMessageSuccessResponse, Message
-            from utils import parse_tags
             res_root = response.root
             if isinstance(res_root, SendMessageSuccessResponse):
                 # Extract the assistant's response text
                 assistant_text = self._extract_text_from_message(res_root.result) if isinstance(res_root.result, Message) else ""
                 
-                # Parse tool calls from <json>...</json> tags (tau-bench format)
-                tool_calls_list = []
-                try:
-                    from utils import parse_answer
-                    json_content = parse_answer(assistant_text)
-                    if json_content:
-                        self.logger.info(f"Parsing JSON content: {json_content}")
-                        
-                        # Try to parse the JSON, if it fails due to extra closing braces, strip them
-                        try:
-                            response_data = json.loads(json_content)
-                        except json.JSONDecodeError as e:
-                            # Check if it's an "Extra data" error and try stripping trailing braces
-                            if "Extra data" in str(e):
-                                # Remove trailing } characters one by one until valid JSON
-                                cleaned = json_content.rstrip()
-                                while cleaned.endswith('}') and len(cleaned) > 0:
-                                    try:
-                                        response_data = json.loads(cleaned)
-                                        self.logger.info(f"Successfully parsed after removing extra braces")
-                                        break
-                                    except json.JSONDecodeError:
-                                        cleaned = cleaned[:-1].rstrip()
-                                else:
-                                    raise e
-                            else:
-                                raise
-                        
-                        if isinstance(response_data, dict):
-                            # Tau-bench format: {"name": "tool_name", "kwargs": {...}}
-                            if "name" in response_data and "kwargs" in response_data:
-                                tool_calls_list = [{
-                                    "name": response_data["name"],
-                                    "arguments": response_data["kwargs"]
-                                }]
-                            # Also support array format for backwards compatibility
-                            elif "tool_calls" in response_data:
-                                tool_calls_list = response_data["tool_calls"]
-                except (json.JSONDecodeError, KeyError) as e:
-                    self.logger.warning(f"Failed to parse JSON from response: {e}")
-                    self.logger.info(f"Raw assistant response: {assistant_text}")
+                # Log full LLM response
+                self.logger.info(f"=== WHITE AGENT RESPONSE (ITERATION) ===")
+                self.logger.info(f"Full response:\n{assistant_text}")
+                self.logger.info(f"=== END WHITE AGENT RESPONSE ===")
                 
                 result = {
                     "jsonrpc": "2.0",
@@ -992,12 +1103,12 @@ Complete this task using the available tools."""
                     "result": {
                         "message": res_root.result.model_dump() if isinstance(res_root.result, Message) else res_root.result,
                         "context_id": res_root.result.context_id if isinstance(res_root.result, Message) else context_id,
-                        "history": [{"role": "assistant", "content": assistant_text, "tool_calls": tool_calls_list}],
+                        "history": [{"role": "assistant", "content": assistant_text}],
                         "artifacts": []
                     }
                 }
                 
-                self.logger.debug(f"White agent follow-up response received")
+                self.logger.debug(f"White agent response received")
                 return result
             else:
                 # Handle error response from white agent
@@ -1011,7 +1122,21 @@ Complete this task using the available tools."""
                     raise Exception(error_msg)
                 
         except Exception as e:
-            self.logger.error(f"Failed to send tool results to white agent: {e}")
+            import traceback as tb
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            self.logger.error(f"Failed to send tool results to white agent")
+            self.logger.error(f"Error type: {error_type}")
+            self.logger.error(f"Error message: {error_msg}")
+            self.logger.error(f"Full traceback:\n{tb.format_exc()}")
+            
+            # Check if white agent is still reachable
+            if "503" in error_msg:
+                self.logger.error(f"503 SERVICE UNAVAILABLE - White agent server may have crashed")
+            elif "connection" in error_msg.lower() or "refused" in error_msg.lower():
+                self.logger.error(f"CONNECTION ERROR - White agent may not be running")
+            
             raise
     
     def get_execution_history(self) -> List[TaskExecutionResult]:
@@ -1019,7 +1144,7 @@ Complete this task using the available tools."""
         return self.execution_history
     
     def cleanup_resources(self):
-        """Clean up Docker resources (containers, images, etc)."""
+        """Clean up Docker resources (containers, images, etc) and HTTP client."""
         self.logger.info("Cleaning up Docker resources...")
         try:
             import docker
@@ -1034,3 +1159,16 @@ Complete this task using the available tools."""
             self.logger.info("Cleanup completed")
         except Exception as e:
             self.logger.warning(f"Error during cleanup: {e}")
+        
+        # Close shared HTTP client
+        try:
+            if hasattr(self, '_httpx_client'):
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(self._httpx_client.aclose())
+                else:
+                    loop.run_until_complete(self._httpx_client.aclose())
+                self.logger.info("HTTP client closed")
+        except Exception as e:
+            self.logger.warning(f"Error closing HTTP client: {e}")

@@ -203,7 +203,7 @@ class SandboxManager:
                 existing_container = self.docker_client.containers.get(container_name)
                 self.logger.info(f"Removing existing container: {container_name}")
                 existing_container.remove(force=True)
-                self.logger.info(f"✓ Existing container removed")
+                self.logger.info(f"Existing container removed")
             except docker.errors.NotFound:
                 # No existing container, which is fine
                 pass
@@ -314,7 +314,7 @@ class SandboxManager:
         except Exception as e:
             self.logger.warning(f"Could not create working directory: {e}")
         
-        self.logger.info(f"✓ Container created from Dockerfile: {container_name}")
+        self.logger.info(f"Container created from Dockerfile: {container_name}")
         return container
     
     def _create_with_base_image(self, sandbox_id: str, sandbox_path: Path) -> Container:
@@ -366,7 +366,7 @@ class SandboxManager:
         except Exception as e:
             self.logger.warning(f"Could not create working directory: {e}")
         
-        self.logger.info(f"✓ Container created from base image: {container_name}")
+        self.logger.info(f"Container created from base image: {container_name}")
         return container
     
     def execute_command(self, sandbox_id: str, command: str, timeout: int = 30) -> CommandResult:

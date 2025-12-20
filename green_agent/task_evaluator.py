@@ -23,7 +23,6 @@ class EvaluationCriteria:
     output_requirements: List[str]  # Required output patterns
     forbidden_commands: List[str]  # Commands that should not be executed
     max_execution_time: float = 300.0  # Maximum total execution time
-    max_commands: int = 50  # Maximum number of commands allowed
     max_tokens: Optional[int] = None  # Maximum total tokens
     max_tokens_per_request: Optional[float] = None  # Maximum tokens per API request
 
@@ -51,6 +50,8 @@ class TaskEvaluator:
         task_paths: TaskPaths,
         container: Container,
         white_agent_response: Optional[Dict[str, Any]] = None,
+        task: Optional[Any] = None,
+        session: Optional[Any] = None,
     ) -> EvaluationResult:
         """
         Comprehensive task evaluation.
@@ -60,13 +61,15 @@ class TaskEvaluator:
             task_paths: Terminal Bench TaskPaths object
             container: Docker container for running tests
             white_agent_response: Optional white agent response containing token/request metadata
+            task: Task object with run_tests_in_same_shell flag
+            session: TmuxSession from agent execution (used if run_tests_in_same_shell is true)
             
         Returns:
             EvaluationResult with detailed evaluation
         """
         self.logger.info(f"Evaluating task {task_id}")
         
-        pytest_results = self._run_terminal_bench_tests(container, task_paths)
+        pytest_results = self._run_terminal_bench_tests(container, task_paths, task, session)
         
         if not pytest_results or pytest_results["tests_run"] == 0:
             raise ValueError(f"No pytest tests found or executed for task {task_id}")
@@ -109,7 +112,6 @@ class TaskEvaluator:
             output_requirements=[],
             forbidden_commands=["rm -rf /", "sudo", "chmod 777", "dd if=/dev/zero"],
             max_execution_time=300.0,
-            max_commands=50
         )
         
         # Extract from task specification
@@ -157,23 +159,27 @@ class TaskEvaluator:
         
         return criteria
     
-    def _run_terminal_bench_tests(self, container: Container, task_paths: TaskPaths) -> Dict[str, Any]:
+    def _run_terminal_bench_tests(self, container: Container, task_paths: TaskPaths, 
+                                   task: Optional[Any] = None, session: Optional[Any] = None) -> Dict[str, Any]:
         """
-        Run Terminal-Bench pytest tests using Terminal Bench's test infrastructure.
+        Run Terminal-Bench pytest tests using tmux sessions (matching Terminal-Bench's approach).
         
         Args:
             container: Docker container to run tests in
             task_paths: Terminal Bench TaskPaths object
+            task: Task object with run_tests_in_same_shell flag
+            session: TmuxSession from agent execution (used if run_tests_in_same_shell is true)
             
         Returns:
             Dictionary with test results
         """
         from terminal_bench.terminal.docker_compose_manager import DockerComposeManager
+        from terminal_bench.terminal.tmux_session import TmuxSession
         
         self.logger.info(f"Copying test files to container")
         
         try:
-            # Use Terminal Bench's built-in copy_to_container method
+            # Copy test files to container
             paths = [task_paths.run_tests_path]
             if task_paths.test_dir.exists():
                 paths.append(task_paths.test_dir)
@@ -184,25 +190,60 @@ class TaskEvaluator:
                 container_dir=str(DockerComposeManager.CONTAINER_TEST_DIR)
             )
             
-            # Run the test script (same pattern as Terminal Bench harness)
+            # Determine which session to use based on run_tests_in_same_shell flag
+            test_session = session
+            created_new_session = False
+            
+            if task and not getattr(task, 'run_tests_in_same_shell', False):
+                # Create a new tmux session for tests (like Terminal-Bench does)
+                self.logger.info("Creating new tmux session for tests (run_tests_in_same_shell=false)")
+                test_session = TmuxSession(
+                    session_name="tests",
+                    container=container,
+                    commands_path=None,
+                    disable_recording=True,
+                    user=""  # Run as default user
+                )
+                test_session.start()
+                created_new_session = True
+            else:
+                # Use the same session as the agent (like Terminal-Bench does for run_tests_in_same_shell=true)
+                self.logger.info("Using existing tmux session for tests (run_tests_in_same_shell=true)")
+            
+            # Run the test script using tmux (same as Terminal-Bench harness)
             test_script_path = DockerComposeManager.CONTAINER_TEST_DIR / task_paths.run_tests_path.name
-            self.logger.info(f"Running Terminal Bench test script: {test_script_path}")
+            self.logger.info(f"Running test script in tmux: {test_script_path}")
             
-            exec_result = container.exec_run(
-                ["bash", str(test_script_path)],
-                workdir="/app"
-            )
+            # Get test timeout
+            test_timeout_sec = getattr(task, 'max_test_timeout_sec', 180.0) if task else 180.0
             
-            exit_code = exec_result.exit_code
-            output = exec_result.output.decode('utf-8', errors='replace') if exec_result.output else ""
+            try:
+                # Send keys to run the test script (blocking with timeout)
+                test_session.send_keys(
+                    ["bash ", str(test_script_path), "Enter"],
+                    block=True,
+                    max_timeout_sec=test_timeout_sec
+                )
+            except TimeoutError:
+                self.logger.warning(f"Test command timed out after {test_timeout_sec}s")
+                # Capture whatever output we have
+                output = test_session.capture_pane(capture_entire=False)
+                return self._parse_pytest_output(output, -1)
             
-            if exit_code != 0:
-                self.logger.warning(f"Test execution completed with exit code {exit_code}")
+            # Capture the output after tests complete
+            output = test_session.capture_pane(capture_entire=False)
             
-            self.logger.info(f"Test output:\n{output}...")
+            self.logger.info(f"Test output:\n{output[:500]}...")
             
-            # Parse pytest output
-            return self._parse_pytest_output(output, exit_code)
+            # Clean up the test session if we created it
+            if created_new_session:
+                try:
+                    test_session.stop()
+                except:
+                    pass
+            
+            # Parse pytest output (exit code not available from tmux)
+            return self._parse_pytest_output(output, 0)
             
         except Exception as e:
             self.logger.error(f"Failed to run tests: {e}")
