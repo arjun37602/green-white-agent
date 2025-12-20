@@ -63,10 +63,10 @@ def _get_request_lock():
 def handle_exception(loop, context):
     """Handle uncaught exceptions in asyncio event loop."""
     msg = context.get("exception", context["message"])
-    logger.critical(f"🔴 ASYNCIO UNCAUGHT EXCEPTION: {msg}")
-    logger.critical(f"🔴 Context: {context}")
+    logger.critical(f"ASYNCIO UNCAUGHT EXCEPTION: {msg}")
+    logger.critical(f"Context: {context}")
     if "exception" in context:
-        logger.critical(f"🔴 Full traceback:\n{traceback.format_exception(type(context['exception']), context['exception'], context['exception'].__traceback__)}")
+        logger.critical(f"Full traceback:\n{traceback.format_exception(type(context['exception']), context['exception'], context['exception'].__traceback__)}")
 
 SYSTEM_PROMPT = """You are a helpful assistant that can interact with a terminal.
 
@@ -139,18 +139,18 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                     "status": "started"
                 }
             
-            self.logger.info(f"🔵 [REQ-{request_id}] NEW REQUEST - context={context.context_id}, active={self._active_requests}, total={self._total_requests}")
+            self.logger.info(f"[REQ-{request_id}] NEW REQUEST - context={context.context_id}, active={self._active_requests}, total={self._total_requests}")
             
             user_input = context.get_user_input()
             input_preview = user_input[:200].replace('\n', '\\n') if user_input else "(empty)"
-            self.logger.debug(f"🔵 [REQ-{request_id}] Input preview: {input_preview}...")
+            self.logger.debug(f"[REQ-{request_id}] Input preview: {input_preview}...")
             
             if context.context_id not in self.ctx_id_to_messages:
                 self.ctx_id_to_messages[context.context_id] = [
                     {"role": "system", "content": SYSTEM_PROMPT}
                 ]
                 self.ctx_id_to_tokens[context.context_id] = 0
-                self.logger.info(f"🔵 [REQ-{request_id}] New context initialized: {context.context_id}")
+                self.logger.info(f"[REQ-{request_id}] New context initialized: {context.context_id}")
             
             messages = self.ctx_id_to_messages[context.context_id]
             messages.append({"role": "user", "content": user_input})
@@ -159,7 +159,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             try:
                 import resource
                 mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # MB
-                self.logger.debug(f"🔵 [REQ-{request_id}] Memory usage: {mem_usage:.1f} MB")
+                self.logger.debug(f"[REQ-{request_id}] Memory usage: {mem_usage:.1f} MB")
             except Exception:
                 pass
             
@@ -177,16 +177,16 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             
             for api_attempt in range(max_api_tries):
                 try:
-                    self.logger.info(f"🔵 [REQ-{request_id}] Calling LLM with model={self.model} (attempt {api_attempt + 1}/{max_api_tries})")
+                    self.logger.info(f"[REQ-{request_id}] Calling LLM with model={self.model} (attempt {api_attempt + 1}/{max_api_tries})")
                     _active_requests[request_id]["status"] = f"llm_call_attempt_{api_attempt + 1}"
                     
                     response = await acompletion(**api_params)
                     
-                    self.logger.info(f"🟢 [REQ-{request_id}] LLM call successful (attempt {api_attempt + 1})")
+                    self.logger.info(f"[REQ-{request_id}] LLM call successful (attempt {api_attempt + 1})")
                     break
                     
                 except asyncio.CancelledError:
-                    self.logger.warning(f"🟠 [REQ-{request_id}] Request cancelled during LLM call")
+                    self.logger.warning(f"[REQ-{request_id}] Request cancelled during LLM call")
                     raise
                     
                 except Exception as api_error:
@@ -195,30 +195,30 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                     error_msg = str(api_error)
                     
                     # Log detailed error info
-                    self.logger.error(f"🔴 [REQ-{request_id}] LLM API error (attempt {api_attempt + 1}/{max_api_tries})")
-                    self.logger.error(f"🔴 [REQ-{request_id}] Error type: {error_type}")
-                    self.logger.error(f"🔴 [REQ-{request_id}] Error message: {error_msg}")
-                    self.logger.error(f"🔴 [REQ-{request_id}] Traceback:\n{traceback.format_exc()}")
+                    self.logger.error(f"[REQ-{request_id}] LLM API error (attempt {api_attempt + 1}/{max_api_tries})")
+                    self.logger.error(f"[REQ-{request_id}] Error type: {error_type}")
+                    self.logger.error(f"[REQ-{request_id}] Error message: {error_msg}")
+                    self.logger.error(f"[REQ-{request_id}] Traceback:\n{traceback.format_exc()}")
                     
                     # Check for specific error types
                     if "rate_limit" in error_msg.lower() or "429" in error_msg:
-                        self.logger.warning(f"🟠 [REQ-{request_id}] Rate limit detected, waiting 5s before retry...")
+                        self.logger.warning(f"[REQ-{request_id}] Rate limit detected, waiting 5s before retry...")
                         await asyncio.sleep(5)
                     elif "timeout" in error_msg.lower():
-                        self.logger.warning(f"🟠 [REQ-{request_id}] Timeout detected, waiting 2s before retry...")
+                        self.logger.warning(f"[REQ-{request_id}] Timeout detected, waiting 2s before retry...")
                         await asyncio.sleep(2)
                     elif "connection" in error_msg.lower():
-                        self.logger.warning(f"🟠 [REQ-{request_id}] Connection error, waiting 2s before retry...")
+                        self.logger.warning(f"[REQ-{request_id}] Connection error, waiting 2s before retry...")
                         await asyncio.sleep(2)
                     elif api_attempt < max_api_tries - 1:
-                        self.logger.warning(f"🟠 [REQ-{request_id}] Unknown error, waiting 2s before retry...")
+                        self.logger.warning(f"[REQ-{request_id}] Unknown error, waiting 2s before retry...")
                         await asyncio.sleep(2)
                     else:
-                        self.logger.error(f"🔴 [REQ-{request_id}] LLM API call failed after {max_api_tries} attempts")
+                        self.logger.error(f"[REQ-{request_id}] LLM API call failed after {max_api_tries} attempts")
                         raise last_api_error
             
             if response is None:
-                self.logger.error(f"🔴 [REQ-{request_id}] No response received after {max_api_tries} attempts")
+                self.logger.error(f"[REQ-{request_id}] No response received after {max_api_tries} attempts")
                 raise RuntimeError(f"Failed to get LLM response after {max_api_tries} attempts")
             
             _active_requests[request_id]["status"] = "processing_response"
@@ -234,7 +234,7 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 completion_tokens = usage.completion_tokens
                 self.ctx_id_to_tokens[context.context_id] += completion_tokens
                 cumulative_tokens = self.ctx_id_to_tokens[context.context_id]
-                self.logger.debug(f"🔵 [REQ-{request_id}] Tokens: {completion_tokens} completion, {cumulative_tokens} cumulative")
+                self.logger.debug(f"[REQ-{request_id}] Tokens: {completion_tokens} completion, {cumulative_tokens} cumulative")
             
             messages.append({
                 "role": "assistant",
@@ -257,10 +257,10 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             
             elapsed = time.time() - start_time
             self._successful_requests += 1
-            self.logger.info(f"🟢 [REQ-{request_id}] COMPLETED in {elapsed:.2f}s - context={context.context_id}, tokens={cumulative_tokens}")
+            self.logger.info(f"[REQ-{request_id}] COMPLETED in {elapsed:.2f}s - context={context.context_id}, tokens={cumulative_tokens}")
             
         except asyncio.CancelledError:
-            self.logger.warning(f"🟠 [REQ-{request_id}] Request was cancelled")
+            self.logger.warning(f"[REQ-{request_id}] Request was cancelled")
             self._failed_requests += 1
             raise
             
@@ -269,11 +269,11 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             elapsed = time.time() - start_time if start_time else 0
             self._failed_requests += 1
             
-            self.logger.error(f"🔴 [REQ-{request_id}] FAILED after {elapsed:.2f}s - context={context.context_id}")
-            self.logger.error(f"🔴 [REQ-{request_id}] Error type: {error_type}")
-            self.logger.error(f"🔴 [REQ-{request_id}] Error message: {str(e)}")
-            self.logger.error(f"🔴 [REQ-{request_id}] Full traceback:\n{traceback.format_exc()}")
-            self.logger.error(f"🔴 [REQ-{request_id}] Stats: success={self._successful_requests}, failed={self._failed_requests}, active={self._active_requests}")
+            self.logger.error(f"[REQ-{request_id}] FAILED after {elapsed:.2f}s - context={context.context_id}")
+            self.logger.error(f"[REQ-{request_id}] Error type: {error_type}")
+            self.logger.error(f"[REQ-{request_id}] Error message: {str(e)}")
+            self.logger.error(f"[REQ-{request_id}] Full traceback:\n{traceback.format_exc()}")
+            self.logger.error(f"[REQ-{request_id}] Stats: success={self._successful_requests}, failed={self._failed_requests}, active={self._active_requests}")
             raise
             
         finally:
@@ -283,32 +283,32 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
                 if request_id in _active_requests:
                     del _active_requests[request_id]
             
-            self.logger.debug(f"🔵 [REQ-{request_id}] Cleanup complete, active requests now: {self._active_requests}")
+            self.logger.debug(f"[REQ-{request_id}] Cleanup complete, active requests now: {self._active_requests}")
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        self.logger.warning(f"🟠 Cancel requested for context: {context.context_id}")
+        self.logger.warning(f"Cancel requested for context: {context.context_id}")
         raise NotImplementedError
 
 
 def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost", port=9002, model="gpt-5"):
-    logger.info(f"🚀 Starting white agent with model={model} on {host}:{port}")
-    logger.info(f"🚀 Python version: {sys.version}")
-    logger.info(f"🚀 Process ID: {os.getpid()}")
+    logger.info(f"Starting white agent with model={model} on {host}:{port}")
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"Process ID: {os.getpid()}")
     
     # Log memory at startup
     try:
         import resource
         mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # MB
-        logger.info(f"🚀 Initial memory usage: {mem_usage:.1f} MB")
+        logger.info(f"Initial memory usage: {mem_usage:.1f} MB")
     except Exception as e:
         logger.debug(f"Could not get memory usage: {e}")
     
     # Set up signal handlers for graceful shutdown
     def signal_handler(signum, frame):
         sig_name = signal.Signals(signum).name
-        logger.warning(f"🟠 Received signal {sig_name} ({signum})")
-        logger.warning(f"🟠 Active requests at shutdown: {_active_requests}")
-        logger.warning(f"🟠 Shutting down gracefully...")
+        logger.warning(f"Received signal {sig_name} ({signum})")
+        logger.warning(f"Active requests at shutdown: {_active_requests}")
+        logger.warning(f"Shutting down gracefully...")
         sys.exit(0)
     
     signal.signal(signal.SIGTERM, signal_handler)
@@ -329,10 +329,10 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
             agent_card=card,
             http_handler=request_handler,
         )
-        logger.info(f"🚀 A2A application created successfully")
+        logger.info(f"A2A application created successfully")
     except Exception as e:
-        logger.critical(f"🔴 Failed to create A2A application: {e}")
-        logger.critical(f"🔴 Traceback:\n{traceback.format_exc()}")
+        logger.critical(f"Failed to create A2A application: {e}")
+        logger.critical(f"Traceback:\n{traceback.format_exc()}")
         raise
 
     # Configure uvicorn with error callbacks
@@ -351,19 +351,19 @@ def start_white_agent(agent_name="terminal_bench_white_agent", host="localhost",
     
     server = uvicorn.Server(config)
     
-    logger.info(f"🚀 Starting uvicorn server...")
-    logger.info(f"🚀 Configuration: backlog=10000, timeout_keep_alive=300, limit_max_requests=100000")
+    logger.info(f"Starting uvicorn server...")
+    logger.info(f"Configuration: backlog=10000, timeout_keep_alive=300, limit_max_requests=100000")
     
     try:
         server.run()
     except Exception as e:
-        logger.critical(f"🔴 Uvicorn server crashed: {e}")
-        logger.critical(f"🔴 Traceback:\n{traceback.format_exc()}")
-        logger.critical(f"🔴 Active requests at crash: {_active_requests}")
+        logger.critical(f"Uvicorn server crashed: {e}")
+        logger.critical(f"Traceback:\n{traceback.format_exc()}")
+        logger.critical(f"Active requests at crash: {_active_requests}")
         raise
     finally:
-        logger.warning(f"🟠 White agent shutting down")
-        logger.warning(f"🟠 Final stats: executor.total={executor._total_requests}, success={executor._successful_requests}, failed={executor._failed_requests}")
+        logger.warning(f"White agent shutting down")
+        logger.warning(f"Final stats: executor.total={executor._total_requests}, success={executor._successful_requests}, failed={executor._failed_requests}")
 
 
 if __name__ == "__main__":

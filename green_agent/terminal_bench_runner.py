@@ -565,21 +565,21 @@ Important notes:
                         error_msg = str(e)
                         
                         # Detailed error logging
-                        self.logger.error(f"🔴 [{task_id}] Error communicating with white agent")
-                        self.logger.error(f"🔴 [{task_id}] Error type: {error_type}")
-                        self.logger.error(f"🔴 [{task_id}] Error message: {error_msg}")
-                        self.logger.error(f"🔴 [{task_id}] Iteration: {iteration}")
-                        self.logger.error(f"🔴 [{task_id}] Full traceback:\n{tb.format_exc()}")
+                        self.logger.error(f"[{task_id}] Error communicating with white agent")
+                        self.logger.error(f"[{task_id}] Error type: {error_type}")
+                        self.logger.error(f"[{task_id}] Error message: {error_msg}")
+                        self.logger.error(f"[{task_id}] Iteration: {iteration}")
+                        self.logger.error(f"[{task_id}] Full traceback:\n{tb.format_exc()}")
                         
                         # Check for specific error types
                         if "503" in error_msg:
-                            self.logger.error(f"🔴 [{task_id}] 503 SERVICE UNAVAILABLE - White agent may be overloaded or crashed")
+                            self.logger.error(f"[{task_id}] 503 SERVICE UNAVAILABLE - White agent may be overloaded or crashed")
                         elif "connection" in error_msg.lower():
-                            self.logger.error(f"🔴 [{task_id}] CONNECTION ERROR - White agent may be unreachable")
+                            self.logger.error(f"[{task_id}] CONNECTION ERROR - White agent may be unreachable")
                         elif "timeout" in error_msg.lower():
-                            self.logger.error(f"🔴 [{task_id}] TIMEOUT ERROR - Request took too long")
+                            self.logger.error(f"[{task_id}] TIMEOUT ERROR - Request took too long")
                         
-                        self.logger.warning(f"🟠 [{task_id}] Breaking loop due to white agent error")
+                        self.logger.warning(f"[{task_id}] Breaking loop due to white agent error")
                         # interaction is already defined at the start of the loop
                         interaction["error"] = str(e)
                         trajectory_data["interactions"].append(interaction)
@@ -1022,16 +1022,16 @@ Current terminal state:
             error_type = type(e).__name__
             error_msg = str(e)
             
-            self.logger.error(f"🔴 Failed to send initial task to white agent")
-            self.logger.error(f"🔴 Error type: {error_type}")
-            self.logger.error(f"🔴 Error message: {error_msg}")
-            self.logger.error(f"🔴 Full traceback:\n{tb.format_exc()}")
+            self.logger.error(f"Failed to send initial task to white agent")
+            self.logger.error(f"Error type: {error_type}")
+            self.logger.error(f"Error message: {error_msg}")
+            self.logger.error(f"Full traceback:\n{tb.format_exc()}")
             
             # Check if white agent is still reachable
             if "503" in error_msg:
-                self.logger.error(f"🔴 503 SERVICE UNAVAILABLE - White agent server may have crashed")
+                self.logger.error(f"503 SERVICE UNAVAILABLE - White agent server may have crashed")
             elif "connection" in error_msg.lower() or "refused" in error_msg.lower():
-                self.logger.error(f"🔴 CONNECTION ERROR - White agent may not be running")
+                self.logger.error(f"CONNECTION ERROR - White agent may not be running")
             
             raise
     
@@ -1126,16 +1126,16 @@ Current terminal state:
             error_type = type(e).__name__
             error_msg = str(e)
             
-            self.logger.error(f"🔴 Failed to send tool results to white agent")
-            self.logger.error(f"🔴 Error type: {error_type}")
-            self.logger.error(f"🔴 Error message: {error_msg}")
-            self.logger.error(f"🔴 Full traceback:\n{tb.format_exc()}")
+            self.logger.error(f"Failed to send tool results to white agent")
+            self.logger.error(f"Error type: {error_type}")
+            self.logger.error(f"Error message: {error_msg}")
+            self.logger.error(f"Full traceback:\n{tb.format_exc()}")
             
             # Check if white agent is still reachable
             if "503" in error_msg:
-                self.logger.error(f"🔴 503 SERVICE UNAVAILABLE - White agent server may have crashed")
+                self.logger.error(f"503 SERVICE UNAVAILABLE - White agent server may have crashed")
             elif "connection" in error_msg.lower() or "refused" in error_msg.lower():
-                self.logger.error(f"🔴 CONNECTION ERROR - White agent may not be running")
+                self.logger.error(f"CONNECTION ERROR - White agent may not be running")
             
             raise
     

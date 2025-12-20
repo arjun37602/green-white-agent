@@ -174,13 +174,13 @@ You should use the following task configuration:
                 trajectories_file = run_output_dir / "trajectories.json"
                 with open(trajectories_file, "w") as f:
                     json.dump(trajectories, f, indent=2)
-                print(f"\n✅ Saved trajectories to {trajectories_file}")
+                print(f"\nSaved trajectories to {trajectories_file}")
                 print(f"   Found {len(trajectories)} context IDs with message histories")
             elif trajectories_response.status_code == 404:
                 # Base agent doesn't have trajectories endpoint, that's fine
                 pass
             else:
-                print(f"\n⚠️  Warning: Failed to fetch trajectories (status {trajectories_response.status_code})")
+                print(f"\nWarning: Failed to fetch trajectories (status {trajectories_response.status_code})")
     except Exception as e:
         # Silently ignore trajectory fetch errors (not critical)
         pass
@@ -219,8 +219,8 @@ You should use the following task configuration:
     p_white.terminate()
     p_white.join()
     print("Agents terminated.")
-    print(f"\n✅ JSONL cache: {results_base}/{model.replace('/', '_')}.jsonl")
-    print(f"✅ Run outputs: {run_output_dir}")
+    print(f"\nJSONL cache: {results_base}/{model.replace('/', '_')}.jsonl")
+    print(f"Run outputs: {run_output_dir}")
     print(f"   - Sessions: {run_output_dir}/sessions")
     print(f"   - Agent logs: {run_output_dir}/agent-logs")
     print(f"   - Trajectories: {run_output_dir}/trajectories.json")

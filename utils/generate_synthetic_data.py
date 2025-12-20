@@ -82,7 +82,7 @@ def generate_synthetic_data(
                 
                 store.save_attempt(model_id, question_id, attempt)
     
-    print(f"✓ Data saved to {output_dir}/")
+    print(f"Data saved to {output_dir}/")
     return store
 
 
@@ -116,7 +116,7 @@ def save_leaderboard(leaderboard: list, output_path: str):
     """Save leaderboard to JSON"""
     with open(output_path, 'w') as f:
         json.dump(leaderboard, f, indent=2)
-    print(f"✓ Leaderboard saved to {output_path}")
+    print(f"Leaderboard saved to {output_path}")
 
 
 def main():
@@ -195,13 +195,13 @@ def main():
     evaluator = Evaluator(data)
     bt_handler = BTHandler("classic_bt")
     evaluator.register_handler(bt_handler)
-    print("✓ Registered BT handler")
+    print("Registered BT handler")
     
     # Generate battles
     num_battles = 500
     print(f"\nGenerating {num_battles} battles...")
     evaluator.generate_battles(num_battles, seed=42)
-    print(f"✓ Generated {len(bt_handler.battles)} battles")
+    print(f"Generated {len(bt_handler.battles)} battles")
     
     # Show sample battles
     print("\nSample battles:")
@@ -221,7 +221,7 @@ def main():
         init_mean=1500.0,
         init_std=50.0
     )
-    print("✓ Training complete")
+    print("Training complete")
     
     # Get and print leaderboard
     evaluator.print_leaderboard("classic_bt")
@@ -255,7 +255,7 @@ def main():
     bootstrap_path = os.path.join(output_dir, "bootstrap_results.json")
     with open(bootstrap_path, 'w') as f:
         json.dump(bootstrap_results, f, indent=2)
-    print(f"\n✓ Bootstrap results saved to {bootstrap_path}")
+    print(f"\nBootstrap results saved to {bootstrap_path}")
     
     # Save config
     config = {
@@ -270,7 +270,7 @@ def main():
     config_path = os.path.join(output_dir, "config.json")
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=2)
-    print(f"✓ Config saved to {config_path}")
+    print(f"Config saved to {config_path}")
     
     print("\n" + "="*60)
     print("COMPLETE")

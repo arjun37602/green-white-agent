@@ -119,7 +119,7 @@ async def send_message(
         card = await get_agent_card(url, httpx_client=httpx_client)
         
         if card is None:
-            _send_message_logger.error(f"🔴 Failed to get agent card from {url}")
+            _send_message_logger.error(f"Failed to get agent card from {url}")
             raise Exception(f"Could not fetch agent card from {url}")
         
         if httpx_client is None:
@@ -172,45 +172,45 @@ async def send_message(
             
     except httpx.HTTPStatusError as e:
         elapsed = time.time() - start_time
-        _send_message_logger.error(f"🔴 HTTP error from {url} after {elapsed:.2f}s")
-        _send_message_logger.error(f"🔴 Status code: {e.response.status_code}")
-        _send_message_logger.error(f"🔴 Response body: {e.response.text[:500] if e.response.text else '(empty)'}")
+        _send_message_logger.error(f"HTTP error from {url} after {elapsed:.2f}s")
+        _send_message_logger.error(f"Status code: {e.response.status_code}")
+        _send_message_logger.error(f"Response body: {e.response.text[:500] if e.response.text else '(empty)'}")
         raise Exception(f"HTTP Error {e.response.status_code}: {e.response.text[:200]}")
         
     except httpx.ConnectTimeout as e:
         elapsed = time.time() - start_time
-        _send_message_logger.error(f"🔴 CONNECT TIMEOUT to {url} after {elapsed:.2f}s")
-        _send_message_logger.error(f"🔴 This usually means the server's accept queue is full or server is temporarily unavailable")
-        _send_message_logger.error(f"🔴 This often happens during batch transitions when many requests complete simultaneously")
-        _send_message_logger.error(f"🔴 Error: {e}")
+        _send_message_logger.error(f"CONNECT TIMEOUT to {url} after {elapsed:.2f}s")
+        _send_message_logger.error(f"This usually means the server's accept queue is full or server is temporarily unavailable")
+        _send_message_logger.error(f"This often happens during batch transitions when many requests complete simultaneously")
+        _send_message_logger.error(f"Error: {e}")
         raise Exception(f"Connect Timeout Error: Could not connect to {url} within timeout - server may be overloaded")
         
     except httpx.ConnectError as e:
         elapsed = time.time() - start_time
-        _send_message_logger.error(f"🔴 CONNECTION ERROR to {url} after {elapsed:.2f}s")
-        _send_message_logger.error(f"🔴 Error: {e}")
+        _send_message_logger.error(f"CONNECTION ERROR to {url} after {elapsed:.2f}s")
+        _send_message_logger.error(f"Error: {e}")
         raise Exception(f"Connection Error: Could not connect to {url}: {e}")
         
     except httpx.WriteTimeout as e:
         elapsed = time.time() - start_time
-        _send_message_logger.error(f"🔴 WRITE TIMEOUT to {url} after {elapsed:.2f}s")
-        _send_message_logger.error(f"🔴 This usually means the server is too busy to read the request")
-        _send_message_logger.error(f"🔴 Consider reducing parallelism or increasing write timeout")
-        _send_message_logger.error(f"🔴 Error: {e}")
+        _send_message_logger.error(f"WRITE TIMEOUT to {url} after {elapsed:.2f}s")
+        _send_message_logger.error(f"This usually means the server is too busy to read the request")
+        _send_message_logger.error(f"Consider reducing parallelism or increasing write timeout")
+        _send_message_logger.error(f"Error: {e}")
         raise Exception(f"Write Timeout Error: Server at {url} too busy to accept request after {elapsed:.2f}s")
         
     except httpx.ReadTimeout as e:
         elapsed = time.time() - start_time
-        _send_message_logger.error(f"🔴 READ TIMEOUT from {url} after {elapsed:.2f}s")
-        _send_message_logger.error(f"🔴 This usually means the LLM call is taking too long")
-        _send_message_logger.error(f"🔴 Error: {e}")
+        _send_message_logger.error(f"READ TIMEOUT from {url} after {elapsed:.2f}s")
+        _send_message_logger.error(f"This usually means the LLM call is taking too long")
+        _send_message_logger.error(f"Error: {e}")
         raise Exception(f"Read Timeout Error: Request to {url} timed out waiting for response")
         
     except httpx.TimeoutException as e:
         elapsed = time.time() - start_time
         timeout_type = type(e).__name__
-        _send_message_logger.error(f"🔴 Timeout ({timeout_type}) from {url} after {elapsed:.2f}s")
-        _send_message_logger.error(f"🔴 Error: {e}")
+        _send_message_logger.error(f"Timeout ({timeout_type}) from {url} after {elapsed:.2f}s")
+        _send_message_logger.error(f"Error: {e}")
         raise Exception(f"Timeout Error ({timeout_type}): Request to {url} timed out after {elapsed:.2f}s")
         
     except Exception as e:
@@ -218,17 +218,17 @@ async def send_message(
         error_type = type(e).__name__
         error_msg = str(e)
         
-        _send_message_logger.error(f"🔴 Error sending message to {url} after {elapsed:.2f}s")
-        _send_message_logger.error(f"🔴 Error type: {error_type}")
-        _send_message_logger.error(f"🔴 Error message: {error_msg}")
+        _send_message_logger.error(f"Error sending message to {url} after {elapsed:.2f}s")
+        _send_message_logger.error(f"Error type: {error_type}")
+        _send_message_logger.error(f"Error message: {error_msg}")
         
         # Check for A2A client errors that wrap underlying issues
         if "A2AClient" in error_type:
-            _send_message_logger.error(f"🔴 A2A Client Error - check underlying network/server issues")
+            _send_message_logger.error(f"A2A Client Error - check underlying network/server issues")
             if "503" in error_msg:
-                _send_message_logger.error(f"🔴 503 errors from A2A usually indicate WriteTimeout or server overload")
+                _send_message_logger.error(f"503 errors from A2A usually indicate WriteTimeout or server overload")
         
-        _send_message_logger.error(f"🔴 Full traceback:\n{traceback.format_exc()}")
+        _send_message_logger.error(f"Full traceback:\n{traceback.format_exc()}")
         
         # Re-raise with more context
         raise Exception(f"Network communication error: {e}")

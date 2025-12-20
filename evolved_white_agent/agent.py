@@ -116,21 +116,21 @@ class TerminalBenchWhiteAgentExecutor(AgentExecutor):
             === COMMAND EXECUTION GUIDELINES ===
 
             DO:
-            ✓ Start with information-gathering commands (ls, pwd, cat, head, etc.)
-            ✓ Use appropriate flags for better output (e.g., ls -la, grep -r)
-            ✓ Pipe commands for efficiency (e.g., cat file | grep pattern)
-            ✓ Check file existence before operations (test -f, ls)
-            ✓ Use absolute paths when ambiguity exists
-            ✓ Quote strings with spaces or special characters
-            ✓ Test with small samples before large operations
+            - Start with information-gathering commands (ls, pwd, cat, head, etc.)
+            - Use appropriate flags for better output (e.g., ls -la, grep -r)
+            - Pipe commands for efficiency (e.g., cat file | grep pattern)
+            - Check file existence before operations (test -f, ls)
+            - Use absolute paths when ambiguity exists
+            - Quote strings with spaces or special characters
+            - Test with small samples before large operations
 
             DON'T:
-            ✗ Run destructive commands without verification (rm -rf, dd)
-            ✗ Execute commands you don't understand
-            ✗ Ignore error messages or failed commands
-            ✗ Assume files/directories exist without checking
-            ✗ Output bash commands as text - always use tools
-            ✗ Make multiple changes without validation between them
+            x Run destructive commands without verification (rm -rf, dd)
+            x Execute commands you don't understand
+            x Ignore error messages or failed commands
+            x Assume files/directories exist without checking
+            x Output bash commands as text - always use tools
+            x Make multiple changes without validation between them
 
             === ERROR HANDLING ===
 
